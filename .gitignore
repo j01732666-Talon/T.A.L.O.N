@@ -1,0 +1,54 @@
+# ==========================================
+# 🐍 Python y Entornos
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+venv/
+env/
+.env/
+
+# ==========================================
+# 🔐 Credenciales y Configuración (CRÍTICO)
+# ==========================================
+.streamlit/secrets.toml
+secrets.toml
+*.env
+*.json
+
+# ==========================================
+# 🗄️ Bases de datos locales
+# ==========================================
+*.duckdb
+*.duckdb.wal
+*.db
+*.sqlite
+
+# ==========================================
+# 📊 Datos de Negocio SAP (CRÍTICO - Cero Fugas)
+# ==========================================
+datalake_local/
+data_ref/
+output/
+uploads/
+*.xlsx
+*.csv
+*.parquet
+*.xls
+
+# ==========================================
+# 📝 Logs y Archivos Temporales
+# ==========================================
+*.log
+.ipynb_checkpoints/
+tmp/
+temp/
+
+# ==========================================
+# 💻 SO y Editores de Código
+# ==========================================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
