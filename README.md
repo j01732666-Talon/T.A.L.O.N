@@ -1,4 +1,4 @@
-# 🦅 T.A.L.O.N. - Data Quality & Profiling Agent
+# 🐦‍⬛ T.A.L.O.N. - Data Quality & Profiling Agent
 **Asistente Inteligente para la Auditoría y Saneamiento de Datos Maestros (SAP)**
 
 T.A.L.O.N. es una plataforma interactiva diseñada para perfilar, evaluar y corregir anomalías en datos maestros (Maestro de Materiales, Directorio Comercial) basándose en las dimensiones de calidad de **DAMA DMBOK** (Completitud, Validez, Unicidad, Consistencia). 
