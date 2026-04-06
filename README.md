@@ -1,5 +1,6 @@
-# 🐦‍⬛ T.A.L.O.N. - Data Quality & Profiling Agent
-**Asistente Inteligente para la Auditoría y Saneamiento de Datos Maestros (SAP)**
+🐦‍⬛ T.A.L.O.N. - Data Quality & Profiling Agent
+
+Asistente Inteligente para la Auditoría y Saneamiento de Datos Maestros (SAP)**
 
 T.A.L.O.N. es una plataforma interactiva diseñada para perfilar, evaluar y corregir anomalías en datos maestros (Maestro de Materiales, Directorio Comercial) basándose en las dimensiones de calidad de **DAMA DMBOK** (Completitud, Validez, Unicidad, Consistencia). 
 
@@ -11,7 +12,7 @@ Integra un motor de procesamiento de datos ultrarrápido con Inteligencia Artifi
 
 * **Extracción y Lectura Segura:** Ingesta de archivos `.xlsx` (Ej. extracciones SAP `MARA/MARC`, `KNA1`, `LFA1`) con mecanismos de *fallback* para lectura dinámica de pestañas.
 * **Motor Matemático (Polars/Pandas):** Cálculos estadísticos y perfilamiento profundo en segundos, atrapando falsos positivos (como los valores "nan").
-* **IA Autónoma (Google Gemini 1.5 Pro):** Análisis de radiografías de datos para proponer reglas de calidad estructuradas sin intervención humana.
+* **IA Autónoma (Google Gemini 2.5 Pro):** Análisis de radiografías de datos para proponer reglas de calidad estructuradas sin intervención humana.
 * **Consultor IA en Tiempo Real (Agente):** Interfaz conversacional tipo Chat donde el usuario puede dar órdenes en lenguaje natural. La IA utiliza **Parallel Function Calling** para crear, editar o actualizar múltiples reglas condicionales al mismo tiempo.
 * **Dashboard Dinámico y UX:** * Recálculo en tiempo real de los *scores* de salud (Salud Global, Completitud, Validez, etc.).
   * Visualizador interactivo de reglas mediante acordeones que resalta automáticamente en verde (`✨ [ACTUALIZADO]`) las modificaciones recientes hechas por la IA.
@@ -23,7 +24,7 @@ Integra un motor de procesamiento de datos ultrarrápido con Inteligencia Artifi
 
 * **Frontend / UI:** [Streamlit](https://streamlit.io/) (Python)
 * **Procesamiento de Datos:** Pandas & Polars (Optimizados para grandes volúmenes de registros).
-* **Inteligencia Artificial:** Google Generative AI SDK (`gemini-1.5-pro`).
+* **Inteligencia Artificial:** Google Generative AI SDK (`gemini-2.5-pro`).
 * **Formatos de Intercambio:** JSON (Gestión de reglas en memoria `st.session_state` y almacenamiento en bóveda "Prime").
 
 ---
@@ -39,4 +40,4 @@ Basado en el diagrama de arquitectura corporativa, los siguientes hitos de desar
 
 ---
 
-*Diseñado y construido para revolucionar el Gobierno de Datos corporativo.*
+Diseñado por Jose Miguel Muñoz Ríos y construido para revolucionar el Gobierno de Datos corporativo.

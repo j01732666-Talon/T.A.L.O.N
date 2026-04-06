@@ -12,10 +12,30 @@ import polars as pl
 from typing import Tuple, Any, List
 
 def validar_esquema(columnas_actuales: List[str], columnas_requeridas: List[str]) -> List[str]:
+    """
+    Compara las columnas presentes en un conjunto de datos contra una lista de columnas requeridas.
+    
+    Args:
+        columnas_actuales (List[str]): Lista con los nombres de las columnas existentes.
+        columnas_requeridas (List[str]): Lista con los nombres de las columnas que deben estar presentes.
+        
+    Returns:
+        List[str]: Una lista que contiene únicamente los nombres de las columnas que faltan.
+    """
     faltantes = [col for col in columnas_requeridas if col not in columnas_actuales]
     return faltantes
 
 def cargar_reglas_json() -> dict:
+    """
+    Localiza y carga el archivo maestro de reglas de calidad (reglas_cde.json).
+    
+    Busca dinámicamente en los directorios 'src/data_ref' y en la raíz del proyecto.
+    Si el archivo no existe o no se encuentra, retorna un diccionario de reglas por defecto 
+    con pesos equitativos para las dimensiones de calidad.
+    
+    Returns:
+        dict: Diccionario con la configuración de reglas de calidad estructuradas por dominio.
+    """
     dir_actual = os.path.dirname(os.path.abspath(__file__))
     dir_src = os.path.dirname(dir_actual)
     ruta_json = os.path.join(dir_src, "data_ref", "reglas_cde.json")
@@ -31,7 +51,21 @@ def cargar_reglas_json() -> dict:
         return {"DEFAULT": {"pesos_dimensiones": {"Completitud": 0.25, "Unicidad": 0.25, "Validez": 0.25, "Consistencia": 0.25}}}
 
 def adaptar_reglas_ia_a_motor(json_ia_str: str, dominio: str) -> dict:
-    """Convierte el JSON del Agente IA al formato estructurado de Polars (Blindaje Quirúrgico)."""
+    """
+    Convierte la salida JSON (texto) generada por la IA en la estructura de diccionario 
+    requerida por el motor de Polars (Blindaje Quirúrgico).
+    
+    Extrae el contenido JSON limpiando cualquier texto adicional de la IA mediante 
+    expresiones regulares. Luego, mapea las reglas de la IA a las dimensiones estándar 
+    (Completitud, Unicidad, Validez, Consistencia) ajustando la clave objetivo según el dominio.
+    
+    Args:
+        json_ia_str (str): Cadena de texto generada por la IA que contiene (o envuelve) el JSON de reglas.
+        dominio (str): El contexto de los datos (ej. "Directorio Comercial", "Maestro de Materiales").
+        
+    Returns:
+        dict: Diccionario estructurado con las reglas adaptadas, o None si ocurre un error en el parseo.
+    """
     try:
         # 1. EXTRACCIÓN QUIRÚRGICA DEL JSON (Ignora cualquier saludo o texto de la IA)
         json_limpio = str(json_ia_str)
@@ -92,6 +126,27 @@ def adaptar_reglas_ia_a_motor(json_ia_str: str, dominio: str) -> dict:
         return None
 
 def ejecutar_auditoria_completa(archivo, unidades_permitidas: list, focos, dominio: str = "Maestro de Materiales", reglas_ia_str: str = None) -> Tuple[pd.DataFrame, dict]:
+    """
+    Motor principal de evaluación de calidad. Procesa un archivo Excel y aplica reglas 
+    vectorizadas de completitud, unicidad, validez y consistencia.
+    
+    Realiza una lectura segura utilizando Pandas para tolerar errores comunes en archivos 
+    (como encabezados vacíos), y luego transfiere el procesamiento a Polars para 
+    maximizar el rendimiento. Calcula un 'Score_Calidad' global y documenta las 
+    fallas específicas por fila.
+    
+    Args:
+        archivo (str, bytes o file-like object): El archivo Excel a evaluar.
+        unidades_permitidas (list): Lista de unidades de medida válidas (para reglas de catálogo).
+        focos (Any): Parámetro de enfoque de reglas (actualmente no utilizado explícitamente en el cuerpo principal).
+        dominio (str, opcional): El contexto comercial de los datos. Por defecto es "Maestro de Materiales".
+        reglas_ia_str (str, opcional): Cadena JSON con reglas generadas dinámicamente por la IA.
+        
+    Returns:
+        Tuple[pd.DataFrame, dict]: 
+            - pd.DataFrame: Dataframe detallado con las puntuaciones por dimensión, el score final y los hallazgos.
+            - dict: Resumen general con el promedio global y por cada dimensión evaluada.
+    """
     # =========================================================================
     # LECTURA SEGURA: Pandas perdona Excels sucios (ej. headers vacíos)
     # =========================================================================
@@ -283,6 +338,21 @@ def ejecutar_auditoria_completa(archivo, unidades_permitidas: list, focos, domin
     return pdf, resumen
 
 def generar_excel_saneamiento_memoria(df: pd.DataFrame) -> bytes:
+    """
+    Genera un archivo Excel binario en memoria con los registros que no alcanzaron el 100% de calidad.
+    
+    Crea un reporte enfocado en el saneamiento:
+    1. Filtra los datos perfectos.
+    2. Reduce las columnas a un set 'ideal' dependiendo del dominio detectado.
+    3. Genera una hoja resumen general ("Resumen_General").
+    4. Crea hojas separadas por cada tipo de error (hallazgo) para facilitar la corrección.
+    
+    Args:
+        df (pd.DataFrame): El dataframe resultante de la auditoría de calidad.
+        
+    Returns:
+        bytes: El contenido del archivo Excel en formato binario, listo para ser descargado o enviado.
+    """
     if df.empty: return b""
     output = io.BytesIO()
     df_lite = df[df['Score_Calidad'] < 100].copy()

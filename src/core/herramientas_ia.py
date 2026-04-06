@@ -2,6 +2,15 @@ import pandas as pd
 import os
 
 def obtener_ruta_data_ref():
+    """
+    Encuentra dinámicamente la ruta hacia la carpeta 'data_ref'.
+    
+    Busca primero en el mismo nivel del directorio 'src' y, si no se encuentra allí, 
+    retrocede un nivel en la jerarquía hacia el directorio raíz.
+    
+    Returns:
+        str: La ruta absoluta hacia el directorio 'data_ref'.
+    """
     """Encuentra dinámicamente la carpeta data_ref."""
     dir_actual = os.path.dirname(os.path.abspath(__file__)) # src/core
     dir_src = os.path.dirname(dir_actual)                   # src
@@ -16,6 +25,22 @@ def obtener_ruta_data_ref():
     return os.path.join(dir_raiz, "data_ref")
 
 def consultar_tabla_referencias(termino_busqueda: str) -> str:
+    """
+    Busca un término específico dentro del archivo 'Tablas de Referencia.xlsx'.
+    
+    Itera sobre todas las pestañas del archivo, procesa las categorías definidas 
+    en las primeras filas y busca coincidencias exactas o parciales del término 
+    (ignorando mayúsculas/minúsculas). La búsqueda se realiza tanto en el nombre 
+    de la categoría como en sus datos asociados.
+    
+    Args:
+        termino_busqueda (str): El texto o valor que se desea encontrar.
+        
+    Returns:
+        str: Una cadena de texto formateada con todas las coincidencias encontradas, 
+             organizadas por categoría y pestaña. Retorna un mensaje de error si 
+             falla la lectura o si no encuentra el archivo.
+    """
     ruta_base = obtener_ruta_data_ref()
     ruta_excel = os.path.join(ruta_base, "Tablas de Referencia.xlsx")
     
@@ -72,10 +97,26 @@ def consultar_tabla_referencias(termino_busqueda: str) -> str:
         return f"Error leyendo las tablas de referencia: {str(e)}"
 
 def consultar_directorio_comercial(termino_busqueda: str) -> str:
+    """
+    Busca un término específico en el conjunto de archivos del directorio comercial.
+    
+    Explora los archivos predefinidos (Proveedores, Clientes, Materiales), leyendo 
+    todas sus pestañas y aplicando un filtro que devuelve las filas completas 
+    donde el término de búsqueda aparezca en al menos una columna.
+    
+    Args:
+        termino_busqueda (str): El texto o valor que se desea encontrar.
+        
+    Returns:
+        str: Una cadena de texto formateada que contiene las filas de los dataframes 
+             donde hubo coincidencias, indicando el archivo y pestaña de origen. 
+             Retorna un mensaje indicando si hubo errores o si no se encontraron datos.
+    """
     ruta_base = obtener_ruta_data_ref()
     archivos = [
         ("Proveedores", "LFA1 - Proveedores.xlsx"),
-        ("Clientes", "KNA1 - Cliente.xlsx")
+        ("Clientes", "KNA1 - Cliente.xlsx"),
+        ("Materiales", "Maestros de Materiales.xlsx")
     ]
         
     resultados = []

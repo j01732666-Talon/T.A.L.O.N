@@ -10,7 +10,13 @@ import pandas as pd
 DB_PATH = "datalake_local/talon_metastore.duckdb"
 
 def inicializar_tabla_usuarios():
-    """Crea la tabla de usuarios y la tabla de auditoria de accesos si no existen."""
+    """
+    Inicializa la base de datos local DuckDB creando las tablas necesarias para el sistema.
+    
+    Crea el directorio de almacenamiento si no existe. Luego, define la tabla 'usuarios_sistema' 
+    para almacenar las credenciales (hasheadas) y la tabla 'registro_accesos' para mantener 
+    la trazabilidad de los ingresos a la plataforma.
+    """
     directorio = os.path.dirname(DB_PATH)
     if directorio and not os.path.exists(directorio):
         os.makedirs(directorio, exist_ok=True)
@@ -32,7 +38,15 @@ def inicializar_tabla_usuarios():
         """)
 
 def registrar_ingreso(email: str):
-    """Guarda silenciosamente un registro cada vez que un usuario inicia sesion con exito."""
+    """
+    Registra en la base de datos el momento exacto en el que un usuario inicia sesión correctamente.
+    
+    Esta función opera de manera silenciosa (captura las excepciones sin interrumpir el flujo) 
+    para poblar la tabla de auditoría 'registro_accesos'.
+    
+    Args:
+        email (str): El correo electrónico del usuario que acaba de iniciar sesión.
+    """
     try:
         with duckdb.connect(DB_PATH) as con:
             con.execute(
@@ -43,7 +57,23 @@ def registrar_ingreso(email: str):
         print(f"Error registrando el acceso: {e}")
 
 def registrar_usuario(email: str, password: str, dominio_permitido: str) -> tuple[bool, str]:
-    """Registra un nuevo usuario validando el dominio corporativo y hasheando su contraseña."""
+    """
+    Crea una nueva cuenta de usuario validando reglas de negocio y asegurando la contraseña.
+    
+    Verifica que el correo pertenezca al dominio corporativo permitido y que la contraseña 
+    cumpla con la longitud mínima. Posteriormente, genera un hash seguro usando bcrypt 
+    antes de almacenar la información en la base de datos DuckDB.
+    
+    Args:
+        email (str): El correo electrónico proporcionado para el registro.
+        password (str): La contraseña en texto plano ingresada por el usuario.
+        dominio_permitido (str): El dominio corporativo exigido (ej. '@empresa.com').
+        
+    Returns:
+        tuple[bool, str]: 
+            - bool: True si el registro fue exitoso, False si falló alguna validación o si el usuario ya existe.
+            - str: Mensaje descriptivo con el resultado de la operación.
+    """
     email = email.lower().strip()
     
     if not email.endswith(dominio_permitido):
@@ -73,7 +103,19 @@ def registrar_usuario(email: str, password: str, dominio_permitido: str) -> tupl
         return False, f"Error en base de datos: {e}"
 
 def validar_credenciales(email: str, password: str) -> bool:
-    """Verifica si el correo existe y si la contraseña coincide con el hash."""
+    """
+    Comprueba la autenticidad de las credenciales de un usuario durante el inicio de sesión.
+    
+    Busca el correo electrónico en la base de datos local y, si lo encuentra, compara 
+    la contraseña ingresada (en texto plano) contra el hash seguro almacenado utilizando bcrypt.
+    
+    Args:
+        email (str): El correo electrónico del usuario que intenta ingresar.
+        password (str): La contraseña en texto plano ingresada en el formulario.
+        
+    Returns:
+        bool: True si las credenciales son correctas y coinciden, False en caso contrario o si ocurre un error.
+    """
     email = email.lower().strip()
     try:
         with duckdb.connect(DB_PATH, read_only=True) as con:

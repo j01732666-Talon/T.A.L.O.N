@@ -1,6 +1,10 @@
 """
-Punto de entrada principal de la aplicacion Streamlit (T.A.L.O.N).
-Diseño Minimalista, Flat y Limpio. Orientado a la Experiencia del Usuario (UX).
+Punto de entrada principal de la aplicación Streamlit (T.A.L.O.N).
+
+Tablero Analítico de Limpieza y Orquestación de Negocios. Este script orquesta 
+la interfaz de usuario minimalista, gestiona el estado de sesión (autenticación, 
+chat, historial de reglas) y coordina la comunicación entre el Motor de Calidad 
+(Polars/Pandas), el Agente IA (Gemini) y el Data Lake local (DuckDB).
 """
 import sys
 import os
@@ -88,6 +92,9 @@ except KeyError:
     st.stop()
 
 # --- FLUJO DE AUTENTICACIÓN MINIMALISTA ---
+# Gestiona la pantalla de Login y Registro.
+# Si el usuario no está autenticado, bloquea el acceso al resto de la aplicación
+# y renderiza los formularios. Utiliza st.session_state para mantener la sesión viva.
 if not st.session_state['autenticado']:
     col_vacia1, col_login, col_vacia3 = st.columns([1.2, 1.2, 1.2])
     with col_login:
@@ -138,13 +145,33 @@ else:
     # --- ÁREA DE USUARIO AUTENTICADO ---
     def procesar_datos(archivo, unidades, focos, dominio, reglas_ia):
         return ejecutar_auditoria_completa(archivo, unidades, focos, dominio, reglas_ia)
-
+    """
+        Función envoltorio (wrapper) para invocar el motor de calidad central.
+        
+        Pasa el archivo cargado y las configuraciones dinámicas de la interfaz 
+        hacia el procesador backend (Polars/Pandas).
+        
+        Args:
+            archivo (file-like object): El archivo Excel subido por el usuario.
+            unidades (list): Lista de unidades de medida válidas.
+            focos (tuple): Elementos específicos a evaluar (actualmente no utilizado).
+            dominio (str): Contexto comercial seleccionado en la barra lateral.
+            reglas_ia (str): Cadena JSON con las reglas generadas dinámicamente.
+            
+        Returns:
+            Tuple[pd.DataFrame, dict]: El dataframe con los resultados detallados y 
+                                       un diccionario con las métricas calculadas.
+        """
     # --- SIDEBAR BASE ---
     st.sidebar.markdown(f"### ⚙️ Panel de Control\n<span style='color:#888; font-size:0.9em;'>👤 {st.session_state['usuario_actual']}</span>", unsafe_allow_html=True)
     dominio_seleccionado = st.sidebar.radio("1. Dominio de Datos:", ("Maestro de Materiales", "Directorio Comercial"))
     archivo_subido = st.sidebar.file_uploader("2. Cargar extracción (.xlsx):", type=['xlsx'])
 
    # --- BOTÓN DE IA EN EL SIDEBAR ---
+   # Activa el Agente IA para analizar estructuralmente el archivo cargado.
+    # Extrae una radiografía (muestreo y nulos) y se la envía a Gemini para que 
+    # devuelva un JSON estricto con las reglas DAMA sugeridas. Estas reglas 
+    # se guardan en el session_state para recalcular el score global al instante.
     if archivo_subido is not None:
         st.sidebar.markdown("### 🧠 Auditor IA")
         if st.sidebar.button("Autoperfilar con IA", type="primary", use_container_width=True):
@@ -313,6 +340,11 @@ else:
         st.markdown("<hr style='border-top: 1px solid #333; margin-top: 10px;'>", unsafe_allow_html=True)
 
         # --- PESTAÑAS (TABS) ---
+        # Renderizado modular de la interfaz principal en 4 áreas:
+        # 1. Dashboard: Gráficos de salud y top de errores.
+        # 2. Asistente IA: Chat interactivo con 'Talon' con memoria de sesión y herramientas.
+        # 3. Explorador: Tabla interactiva para filtrar registros anómalos.
+        # 4. Historial: Consulta de las ejecuciones guardadas en DuckDB.
         tab_dashboard, tab_ia, tab_datos, tab_historico = st.tabs(["📊 Dashboard", "🧠 Asistente IA", "🔎 Explorador", "🕒 Historial"])
 
         with tab_dashboard:

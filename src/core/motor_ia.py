@@ -9,14 +9,23 @@ from core.herramientas_ia import consultar_tabla_referencias, consultar_director
 
 def gestionar_regla_calidad(columna: str, regla_tipo: str, penalizacion: int, mensaje: str, dimension: str = "Validez", condicion_columna: str = None, condicion_valor: str = None) -> str:
     """
-    Crea o modifica una regla de calidad en la memoria interactiva.
-    Si la regla ya existe, la actualiza. Si no existe (nueva columna o nueva validación), la crea.
-    Parámetros:
-    - columna: Nombre exacto de la columna en el archivo.
-    - regla_tipo: Tipo de regla ('nulo', 'duplicado', 'longitud_exacta', 'regex_custom', 'catalogo', etc).
-    - penalizacion: Puntos a restar (ej. 50, 100).
-    - mensaje: Mensaje amigable de error.
-    - dimension: Dimensión DAMA ('Completitud', 'Validez', 'Unicidad', 'Consistencia').
+    Crea o modifica una regla de calidad en la memoria interactiva de Streamlit (session_state).
+    
+    Si la regla ya existe para la columna y tipo especificados, la actualiza. Si no existe, 
+    la crea bajo la dimensión DAMA correspondiente. También registra las modificaciones recientes.
+    
+    Args:
+        columna (str): Nombre exacto de la columna en el archivo de datos.
+        regla_tipo (str): Tipo de regla a aplicar ('nulo', 'duplicado', 'longitud_exacta', etc.).
+        penalizacion (int): Puntos a restar del score de calidad si se incumple la regla (ej. 50, 100).
+        mensaje (str): Mensaje amigable de error que se mostrará en los hallazgos.
+        dimension (str, opcional): Dimensión DAMA a la que pertenece la regla ('Completitud', 
+                                   'Validez', 'Unicidad', 'Consistencia'). Por defecto es "Validez".
+        condicion_columna (str, opcional): Nombre de una columna que condiciona la regla.
+        condicion_valor (str, opcional): Valor que debe tener la condicion_columna para que la regla aplique.
+        
+    Returns:
+        str: Un mensaje indicando el éxito de la operación o detallando el error ocurrido.
     """
     import streamlit as st
     import json
@@ -87,6 +96,10 @@ def gestionar_regla_calidad(columna: str, regla_tipo: str, penalizacion: int, me
 # 1. MODELOS PYDANTIC (El "Candado" del JSON)
 # ==========================================
 class ReglaDinamicaIA(BaseModel):
+    """
+    Modelo Pydantic que define la estructura estricta de una regla de calidad individual.
+    Garantiza que la IA devuelva siempre los tipos de datos y nombres de campos correctos.
+    """
     nombre_columna: str = Field(description="Nombre exacto de la columna en el DataFrame")
     regla: str = Field(description="Tipo de regla soportada por Polars: 'nulo', 'duplicado', 'longitud_exacta', o 'regex_custom'")
     penalizacion: int = Field(description="Puntos a restar del score de calidad (ej: 20, 50, 100)")
@@ -98,10 +111,17 @@ class ReglaDinamicaIA(BaseModel):
     condicion_valor: Optional[str] = Field(default=None, description="Opcional. Valor que debe tener la condición (Ej: 'ZFER')")
 
 class CategoriaDimensionIA(BaseModel):
+    """
+    Modelo Pydantic que agrupa un conjunto de reglas bajo una dimensión DAMA específica.
+    """
     dimension_dama: str = Field(description="Dimensión de calidad (Ej: 'Completitud', 'Validez', 'Unicidad')")
     reglas_aplicadas: List[ReglaDinamicaIA] = Field(description="Lista de reglas para esta dimensión")
 
 class PerfilamientoDAMA(BaseModel):
+    """
+    Modelo Pydantic raíz que estructura la respuesta completa de la IA, conteniendo un 
+    diagnóstico y el diccionario de reglas estructuradas por dimensión.
+    """
     diagnostico_negocio: str = Field(description="Breve análisis de 2 líneas sobre la base de datos.")
     diccionario_reglas: List[CategoriaDimensionIA] = Field(description="El JSON estructurado con las reglas")
 
@@ -109,7 +129,19 @@ class PerfilamientoDAMA(BaseModel):
 # 2. BÓVEDA DE MEMORIA (REGLAS PRIME)
 # ==========================================
 def guardar_reglas_prime(json_reglas: str, dominio: str) -> str:
-    """Guarda el JSON actual como el estándar oficial (Prime)."""
+    """
+    Almacena el JSON de reglas actual en el disco duro para que actúe como el estándar oficial ('Prime').
+    
+    Crea un directorio llamado 'reglas_prime' (si no existe) y guarda el archivo con un 
+    nombre basado en el dominio proporcionado (ej. 'Directorio_Comercial_Prime.json').
+    
+    Args:
+        json_reglas (str): El string en formato JSON con la configuración de reglas a guardar.
+        dominio (str): El contexto comercial de los datos para determinar el nombre del archivo.
+        
+    Returns:
+        str: Un mensaje de confirmación indicando el éxito de la operación o el error de escritura.
+    """    
     dir_actual = os.path.dirname(os.path.abspath(__file__))
     ruta_prime = os.path.join(dir_actual, "..", "data_ref", "reglas_prime")
     os.makedirs(ruta_prime, exist_ok=True) # Crea la carpeta si no existe
@@ -126,7 +158,18 @@ def guardar_reglas_prime(json_reglas: str, dominio: str) -> str:
         return f"❌ Error guardando reglas: {e}"
 
 def leer_reglas_prime(dominio: str) -> str:
-    """Busca si ya existe un archivo Prime para leerlo."""
+    """
+    Busca y extrae la configuración del archivo de reglas 'Prime' almacenado en disco.
+    
+    Localiza el archivo correspondiente al dominio indicado. Si el archivo existe, 
+    lee su contenido y lo retorna; en caso contrario o de error, retorna un string vacío.
+    
+    Args:
+        dominio (str): El contexto comercial de los datos para determinar qué archivo buscar.
+        
+    Returns:
+        str: El contenido del archivo JSON como texto, o un string vacío si no se encuentra.
+    """
     dir_actual = os.path.dirname(os.path.abspath(__file__))
     ruta_prime = os.path.join(dir_actual, "..", "data_ref", "reglas_prime")
     nombre_archivo = "Directorio_Comercial_Prime.json" if "Directorio" in dominio else "Maestro_Materiales_Prime.json"
@@ -144,6 +187,14 @@ def leer_reglas_prime(dominio: str) -> str:
 # 3. CONFIGURACIÓN Y CONEXIÓN API
 # ==========================================
 def configurar_api() -> bool:
+    """
+    Inicializa la configuración de la API de Google Generative AI (Gemini).
+    
+    Extrae la clave de la API desde los secretos de Streamlit (secrets.toml) y la aplica.
+    
+    Returns:
+        bool: True si la configuración fue exitosa, False si no se encontró la clave.
+    """
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         return True
@@ -152,6 +203,15 @@ def configurar_api() -> bool:
         return False
 
 def obtener_modelo_agente() -> str:
+    """
+    Obtiene el nombre del modelo de Gemini más adecuado para la generación de contenido.
+    
+    Busca entre los modelos disponibles por versiones específicas (como 2.5-flash o 2.0-flash) 
+    y selecciona el primero que encuentre, o utiliza uno por defecto en caso de fallo.
+    
+    Returns:
+        str: La ruta o identificador del modelo seleccionado (ej. 'models/gemini-2.5-flash').
+    """
     try:
         modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         return next((m for m in modelos if "2.5-flash" in m or "2.0-flash" in m), "models/gemini-2.5-flash")
@@ -162,6 +222,18 @@ def obtener_modelo_agente() -> str:
 # 4. EXTRACCIÓN Y PERFILAMIENTO AUTÓNOMO
 # ==========================================
 def extraer_radiografia_datos(df: pd.DataFrame) -> str:
+    """
+    Genera un resumen analítico (radiografía) del DataFrame para enviar como contexto a la IA.
+    
+    Calcula el total de registros, el porcentaje de valores nulos por columna y extrae 
+    una muestra aleatoria (máximo 50 filas) para que el Agente IA pueda entender la estructura.
+    
+    Args:
+        df (pd.DataFrame): El conjunto de datos original a analizar.
+        
+    Returns:
+        str: Un texto formateado con los metadatos y la muestra de los datos en formato diccionario.
+    """
     if df.empty: return "DataFrame vacío."
     muestra_df = df.sample(min(50, len(df))) if len(df) > 50 else df
     nulos = (df.isnull().sum() / len(df) * 100).round(1).to_dict()
@@ -169,9 +241,20 @@ def extraer_radiografia_datos(df: pd.DataFrame) -> str:
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def generar_reglas_autonomas_ia(radiografia_str: str, dominio: str) -> str:
-    """Genera reglas DAMA basadas en la radiografía del Excel (Versión libre de esquemas)."""
+    """
+    Se comunica con Gemini para generar un set inicial de reglas de calidad basadas en la radiografía de los datos.
     
-    # ¡AQUÍ ESTÁ LA MAGIA! Llamamos a la función que tienes arriba en este mismo archivo
+    Utiliza un prompt estricto pidiendo la estructura DAMA y forzando la salida a formato JSON. 
+    Esta función está cacheada en Streamlit para evitar re-ejecuciones costosas si la radiografía no cambia.
+    
+    Args:
+        radiografia_str (str): El resumen de los datos extraído previamente.
+        dominio (str): El contexto comercial de los datos.
+        
+    Returns:
+        str: Un string en formato JSON válido con el diccionario de reglas sugerido por la IA. 
+             Retorna un JSON estructurado de error en caso de fallo en la conexión o parseo.
+    """
     nombre_modelo = obtener_modelo_agente()
 
     prompt_dama = f"""
@@ -223,7 +306,23 @@ def generar_reglas_autonomas_ia(radiografia_str: str, dominio: str) -> str:
         error_limpio = str(e).replace('"', "'").replace('\n', ' ').replace('\r', '')
         return f'{{"diagnostico_negocio": "Fallo de conexión", "diccionario_reglas": [], "error": "{error_limpio}"}}'
 
-def responder_chat_ia(mensaje: str, df_procesado: pd.DataFrame, contexto: str, historial_ui: list) -> str:    
+def responder_chat_ia(mensaje: str, df_procesado: pd.DataFrame, contexto: str, historial_ui: list) -> str:
+    """
+    Maneja la interacción del usuario con el Agente IA ('Talon') a través de la interfaz de chat.
+    
+    Prepara el modelo inyectándole contexto (reglas activas, alcance), el historial de 
+    la conversación y un set de herramientas funcionales (consultas y gestión de reglas) 
+    para que la IA actúe de manera autónoma resolviendo las peticiones.
+    
+    Args:
+        mensaje (str): La consulta o instrucción enviada por el usuario en el chat.
+        df_procesado (pd.DataFrame): El dataframe actual (no utilizado directamente en la IA, pero puede ser útil para extensiones).
+        contexto (str): Descripción del alcance actual.
+        historial_ui (list): Lista de diccionarios representando el historial previo del chat.
+        
+    Returns:
+        str: La respuesta de texto generada por la IA tras procesar el mensaje y posiblemente usar sus herramientas.
+    """
     json_actual = st.session_state.get('reglas_ia_dinamicas', 'No hay reglas dinámicas cargadas.')
     
     prompt_sistema = f"""
@@ -239,7 +338,7 @@ def responder_chat_ia(mensaje: str, df_procesado: pd.DataFrame, contexto: str, h
     3. Asigna penalizaciones realistas (entre 10 y 100 puntos) según la criticidad del campo.
     4. NO respondas a peticiones fuera del contexto de arquitectura o calidad de datos.
     """
-    
+
     try:
         # AQUÍ ACTUALIZAMOS EL NOMBRE DE LA HERRAMIENTA EN LA LISTA
         modelo = genai.GenerativeModel(
