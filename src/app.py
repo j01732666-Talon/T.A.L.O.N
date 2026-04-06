@@ -1,10 +1,10 @@
 """
-Punto de entrada principal de la aplicación Streamlit (T.A.L.O.N).
+    Punto de entrada principal de la aplicación Streamlit (T.A.L.O.N).
 
-Tablero Analítico de Limpieza y Orquestación de Negocios. Este script orquesta 
-la interfaz de usuario minimalista, gestiona el estado de sesión (autenticación, 
-chat, historial de reglas) y coordina la comunicación entre el Motor de Calidad 
-(Polars/Pandas), el Agente IA (Gemini) y el Data Lake local (DuckDB).
+    Tablero Analítico de Limpieza y Orquestación de Negocios. Este script orquesta 
+    la interfaz de usuario minimalista, gestiona el estado de sesión (autenticación, 
+    chat, historial de reglas) y coordina la comunicación entre el Motor de Calidad 
+    (Polars/Pandas), el Agente IA (Gemini) y el Data Lake local (DuckDB).
 """
 import sys
 import os
@@ -145,7 +145,7 @@ else:
     # --- ÁREA DE USUARIO AUTENTICADO ---
     def procesar_datos(archivo, unidades, focos, dominio, reglas_ia):
         return ejecutar_auditoria_completa(archivo, unidades, focos, dominio, reglas_ia)
-    """
+        """
         Función envoltorio (wrapper) para invocar el motor de calidad central.
         
         Pasa el archivo cargado y las configuraciones dinámicas de la interfaz 
