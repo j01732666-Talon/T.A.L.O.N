@@ -158,7 +158,7 @@ def renderizar_grafico_por_foco(df_procesado: pd.DataFrame) -> None:
     st.altair_chart((bars + text).configure_view(strokeWidth=0), use_container_width=True)
 
 def renderizar_tabla_hallazgos(df: pd.DataFrame):
-    """Muestra los registros con errores y permite filtrar por tipo de anomalía."""
+    """Muestra los registros con errores con columnas dinámicas por cada tipo de hallazgo."""
     st.markdown("### 🔎 Explorador de Anomalías")
     
     if 'Score_Calidad' not in df.columns:
@@ -174,44 +174,29 @@ def renderizar_tabla_hallazgos(df: pd.DataFrame):
 
     st.warning(f"Se encontraron {len(df_mostrar)} registros con oportunidades de mejora.")
 
-    # --- NUEVO: SISTEMA DE FILTRO INTERACTIVO DE ERRORES ---
+    # --- MAGIA: CREACIÓN DE COLUMNAS DINÁMICAS POR ERROR ---
     import itertools
-    
-    # Extraemos todos los errores únicos, separando los que vienen pegados por comas
     lista_errores = df_mostrar['Hallazgos_Detallados'].dropna().astype(str).str.split(', ').tolist()
     errores_unicos = sorted(list(set(itertools.chain.from_iterable(lista_errores))))
     
-    # Limpieza por si acaso
-    if "Sin Errores" in errores_unicos: errores_unicos.remove("Sin Errores")
-    if "nan" in errores_unicos: errores_unicos.remove("nan")
+    # Limpieza
+    for err in ["Sin Errores", "nan", ""]:
+        if err in errores_unicos: errores_unicos.remove(err)
 
-    # Dibujamos el selector múltiple
-    if errores_unicos:
-        errores_seleccionados = st.multiselect(
-            "🎯 Filtrar por tipo de anomalía específica:",
-            options=errores_unicos,
-            placeholder="Selecciona una o varias anomalías para filtrar la tabla..."
-        )
-        
-        # Si el usuario selecciona algo, filtramos el DataFrame
-        if errores_seleccionados:
-            # Nos quedamos solo con las filas que contengan alguno de los errores seleccionados
-            mask = df_mostrar['Hallazgos_Detallados'].apply(
-                lambda x: any(err in str(x) for err in errores_seleccionados)
-            )
-            df_mostrar = df_mostrar[mask]
-            st.caption(f"Mostrando {len(df_mostrar)} registros que coinciden con el filtro.")
-    # --------------------------------------------------------
+    # Creamos una columna por cada error único y le ponemos una ❌
+    for error in errores_unicos:
+        df_mostrar[error] = df_mostrar['Hallazgos_Detallados'].apply(lambda x: "❌" if error in str(x) else "")
 
-    # 2. Definimos las columnas a mostrar según el dominio
+    # 2. Definimos las columnas base
     if 'Dirección' in df.columns or 'Cliente' in df.columns:
-        cols_preferidas = ['Score_Calidad', 'SKU_num', 'Desc_Material', 'Dirección', 'Correo electrónico', 'Teléfono', 'Clave de país/región', 'Hallazgos_Detallados']
+        cols_base = ['Score_Calidad', 'SKU_num', 'Desc_Material', 'Dirección', 'Correo electrónico', 'Teléfono', 'Clave de país/región']
     else:
-        cols_preferidas = ['Score_Calidad', 'SKU_num', 'Desc_Material', 'tipo_mat', 'Hallazgos_Detallados']
+        cols_base = ['Score_Calidad', 'SKU_num', 'Desc_Material', 'tipo_mat']
 
-    columnas_tabla = [c for c in cols_preferidas if c in df_mostrar.columns]
+    # Unimos las columnas base con las nuevas columnas de errores
+    columnas_tabla = [c for c in cols_base if c in df_mostrar.columns] + errores_unicos
 
-    # 3. Blindaje numérico y renderizado final (¡Con maquillaje restaurado!)
+    # 3. Blindaje numérico y renderizado final
     df_mostrar['Score_Calidad'] = pd.to_numeric(df_mostrar['Score_Calidad'], errors='coerce').fillna(0).round(1)
 
     st.dataframe(
@@ -219,7 +204,6 @@ def renderizar_tabla_hallazgos(df: pd.DataFrame):
         use_container_width=True, 
         hide_index=True,
         column_config={
-            "Score_Calidad": st.column_config.ProgressColumn("Calidad", format="%d%%", min_value=0, max_value=100),
-            "Hallazgos_Detallados": st.column_config.TextColumn("Detalle del Error")
+            "Score_Calidad": st.column_config.ProgressColumn("Calidad", format="%d%%", min_value=0, max_value=100)
         }
     )
