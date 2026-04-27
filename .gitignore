@@ -16,6 +16,7 @@ env/
 secrets.toml
 *.env
 *.json
+credenciales_gcp.json
 
 # ==========================================
 # 🗄️ Bases de datos locales
