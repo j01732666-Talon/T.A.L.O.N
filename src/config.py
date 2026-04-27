@@ -1,37 +1,49 @@
 """
 Configuración global de T.A.L.O.N.
-Manejo de variables de entorno, constantes de negocio y configuración de la IA.
+Carga dinámica de catálogos y configuración de la IA.
 """
 import os
+import json
 import streamlit as st
 import google.generativeai as genai
 
-# ==========================================
-# 🤖 CONFIGURACIÓN DEL MODELO DE IA
-# ==========================================
+# --- 1. RUTA DINÁMICA ANTI-ERRORES ---
+DIR_ACTUAL = os.path.dirname(os.path.abspath(__file__))
+RUTA_CATALOGOS = os.path.join(DIR_ACTUAL, "data_ref", "catalogos_negocio.json")
+
+# --- 2. FUNCIÓN DE CARGA ---
+def cargar_catalogos_maestros():
+    """Lee el archivo maestro JSON de forma segura."""
+    if os.path.exists(RUTA_CATALOGOS):
+        try:
+            with open(RUTA_CATALOGOS, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error leyendo el JSON de catálogos: {e}")
+    else:
+        print(f"⚠️ Atención: No se encontró el archivo de catálogos en: {RUTA_CATALOGOS}")
+    return {}
+
+# --- 3. CREACIÓN DE LA VARIABLE GLOBAL (¡SIN ESPACIOS A LA IZQUIERDA!) ---
+CATALOGOS = cargar_catalogos_maestros()
+
+# --- 4. VARIABLES EXPORTADAS PARA APP.PY ---
+UNIDADES_REF = CATALOGOS.get("unidades_medida", [])
+CUSTODIOS = CATALOGOS.get("custodios_por_tipo", {})
+NOMBRES_MATERIALES = CATALOGOS.get("mapeo_nombres_material", {})
+DOMINIOS_CONFIG = CATALOGOS.get("dominios_config", {}) 
+
+# --- 5. CONFIGURACIÓN DEL MODELO DE IA ---
 def obtener_modelo_agente() -> str:
-    """
-    Retorna el nombre oficial y estable del modelo de Google Gemini.
-    Evitamos usar sufijos '-latest' para prevenir errores 404 cuando Google actualiza sus servidores.
-    """
-    # Modelo principal sugerido para análisis complejos de datos:
+    """Retorna el nombre oficial y estable del modelo de Google Gemini."""
     return "gemini-1.5-pro" 
-    
-    # Nota: Si en el futuro quieres que el perfilamiento sea mucho más rápido (aunque un poco menos analítico), 
-    # puedes cambiar la línea de arriba por: return "gemini-1.5-flash"
 
 def configurar_api_ia():
-    """Inicializa la llave de Gemini leyendo desde secrets.toml o variables de entorno."""
+    """Inicializa la llave de Gemini leyendo desde secrets.toml de Streamlit."""
     try:
-        # 1. Intenta leer de secrets.toml (Estándar de Streamlit)
         api_key = st.secrets.get("GEMINI_API_KEY")
-        
-        # 2. Si no está en secrets, busca en las variables de entorno locales (.env)
         if not api_key:
-            api_key = os.environ.get("GEMINI_API_KEY")
-            
-        if not api_key:
-            print("⚠️ ADVERTENCIA: No se encontró la GEMINI_API_KEY. La IA no funcionará.")
+            print("⚠️ ADVERTENCIA: No se encontró la GEMINI_API_KEY en .streamlit/secrets.toml.")
             return False
             
         genai.configure(api_key=api_key)
@@ -40,28 +52,5 @@ def configurar_api_ia():
         print(f"Error configurando la API de Gemini: {e}")
         return False
 
-# Ejecutamos la configuración automáticamente al importar este archivo en app.py
+# Ejecutamos la configuración automáticamente
 configurar_api_ia()
-
-
-# ==========================================
-# ⚙️ CONSTANTES DE NEGOCIO Y DOMINIOS (SAP)
-# ==========================================
-
-# Catálogo de unidades de medida permitidas para la regla de Validez
-UNIDADES_REF = [
-    "UN", "M", "KG", "G", "L", "ML", "CJ", "PZ", 
-    "CM", "MM", "M2", "M3", "GAL", "TON", "MG", "LB", "OZ"
-]
-
-# Configuración de los dominios de datos que maneja la aplicación
-DOMINIOS_CONFIG = {
-    "Maestro de Materiales": {
-        "descripcion": "Gestión de artículos, productos terminados, insumos y repuestos (MARA/MARC).",
-        "focos_principales": ["ZFER", "ZROH", "ZERS", "ZVER", "ZHAW", "ZIUC", "ZSER", "ZHAL"]
-    },
-    "Directorio Comercial": {
-        "descripcion": "Gestión de datos maestros de Clientes (KNA1) y Proveedores (LFA1).",
-        "focos_principales": ["Clientes", "Proveedores"]
-    }
-}
