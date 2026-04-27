@@ -1,7 +1,7 @@
 import google.generativeai as genai
 
 # Reemplaza con tu clave real solo para esta prueba
-genai.configure(api_key="TU_CLAVE_AQUI")
+genai.configure(api_key="AIzaSyAE1We938Ps0YAIqrpwEMucviqp9RNP_DE")
 
 print("Modelos disponibles para generar texto:")
 for m in genai.list_models():

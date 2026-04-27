@@ -1,352 +1,179 @@
-import streamlit as st
-import pandas as pd
+"""
+Motor de IA para T.A.L.O.N. 
+Responsable del perfilamiento autónomo y la asistencia conversacional.
+Totalmente desacoplado de Streamlit.
+"""
 import json
+import re
 import os
 import google.generativeai as genai
-from pydantic import BaseModel, Field
-from typing import List, Optional
-from core.herramientas_ia import consultar_tabla_referencias, consultar_directorio_comercial
+import pandas as pd
+from typing import Optional
 
-def gestionar_regla_calidad(columna: str, regla_tipo: str, penalizacion: int, mensaje: str, dimension: str = "Validez", condicion_columna: str = None, condicion_valor: str = None) -> str:
-    """
-    Crea o modifica una regla de calidad en la memoria interactiva de Streamlit (session_state).
-    
-    Si la regla ya existe para la columna y tipo especificados, la actualiza. Si no existe, 
-    la crea bajo la dimensión DAMA correspondiente. También registra las modificaciones recientes.
-    
-    Args:
-        columna (str): Nombre exacto de la columna en el archivo de datos.
-        regla_tipo (str): Tipo de regla a aplicar ('nulo', 'duplicado', 'longitud_exacta', etc.).
-        penalizacion (int): Puntos a restar del score de calidad si se incumple la regla (ej. 50, 100).
-        mensaje (str): Mensaje amigable de error que se mostrará en los hallazgos.
-        dimension (str, opcional): Dimensión DAMA a la que pertenece la regla ('Completitud', 
-                                   'Validez', 'Unicidad', 'Consistencia'). Por defecto es "Validez".
-        condicion_columna (str, opcional): Nombre de una columna que condiciona la regla.
-        condicion_valor (str, opcional): Valor que debe tener la condicion_columna para que la regla aplique.
-        
-    Returns:
-        str: Un mensaje indicando el éxito de la operación o detallando el error ocurrido.
-    """
-    import streamlit as st
-    import json
-
-    if 'reglas_ia_dinamicas' not in st.session_state or not st.session_state['reglas_ia_dinamicas']:
-        return "Error: No hay reglas cargadas en memoria para modificar o ampliar."
-
-    try:
-        reglas = json.loads(st.session_state['reglas_ia_dinamicas'])
-        modificado = False
-        categoria_encontrada = False
-
-        nueva_regla = {
-            "nombre_columna": columna,
-            "regla": regla_tipo,
-            "penalizacion": penalizacion,
-            "mensaje": mensaje
-        }
-        if condicion_columna and condicion_valor:
-            nueva_regla["condicion_columna"] = condicion_columna
-            nueva_regla["condicion_valor"] = condicion_valor
-
-        # 1. Intentamos buscar y editar si ya existe
-        for categoria in reglas.get("diccionario_reglas", []):
-            if categoria.get("dimension_dama") == dimension:
-                categoria_encontrada = True
-                for regla in categoria.get("reglas_aplicadas", []):
-                    if regla.get("nombre_columna") == columna and regla.get("regla") == regla_tipo:
-                        regla.update(nueva_regla)
-                        modificado = True
-                        break
-                
-                # 2. Si la dimensión existe pero la regla no, la agregamos (CREACIÓN)
-                if not modificado:
-                    categoria.setdefault("reglas_aplicadas", []).append(nueva_regla)
-                    modificado = True
-                break
-
-        # 3. Si ni siquiera existe la dimensión (raro, pero posible), la creamos
-        if not categoria_encontrada:
-            reglas.setdefault("diccionario_reglas", []).append({
-                "dimension_dama": dimension,
-                "reglas_aplicadas": [nueva_regla]
-            })
-            modificado = True
-
-        if modificado:
-            st.session_state['reglas_ia_dinamicas'] = json.dumps(reglas)
-            
-            # --- NUEVA LÓGICA: Lista de cambios ---
-            key_cambio = f"{dimension}_{columna}_{regla_tipo}"
-            
-            # Si no existe la lista, la creamos. Si existe, agregamos el nuevo cambio.
-            if 'ultimas_reglas_modificadas' not in st.session_state:
-                st.session_state['ultimas_reglas_modificadas'] = []
-                
-            if key_cambio not in st.session_state['ultimas_reglas_modificadas']:
-                st.session_state['ultimas_reglas_modificadas'].append(key_cambio)
-            # --------------------------------------
-            
-            return f"Éxito: La regla para '{columna}' ({regla_tipo}) fue guardada/actualizada correctamente en la dimensión {dimension}."
-        
-        return "Error desconocido al intentar gestionar la regla."
-    except Exception as e:
-        return f"Error técnico al gestionar: {e}"
-
-# ==========================================
-# 1. MODELOS PYDANTIC (El "Candado" del JSON)
-# ==========================================
-class ReglaDinamicaIA(BaseModel):
-    """
-    Modelo Pydantic que define la estructura estricta de una regla de calidad individual.
-    Garantiza que la IA devuelva siempre los tipos de datos y nombres de campos correctos.
-    """
-    nombre_columna: str = Field(description="Nombre exacto de la columna en el DataFrame")
-    regla: str = Field(description="Tipo de regla soportada por Polars: 'nulo', 'duplicado', 'longitud_exacta', o 'regex_custom'")
-    penalizacion: int = Field(description="Puntos a restar del score de calidad (ej: 20, 50, 100)")
-    mensaje: str = Field(description="Mensaje de error amigable para el usuario final")
-    patron_regex: Optional[str] = Field(default=None, description="La expresión regular a evaluar.")
-    valor: Optional[int] = Field(default=None, description="El número exacto de caracteres.")
-    # --- NUEVOS CAMPOS CONDICIONALES ---
-    condicion_columna: Optional[str] = Field(default=None, description="Opcional. Columna de la condición (Ej: 'tipo_mat')")
-    condicion_valor: Optional[str] = Field(default=None, description="Opcional. Valor que debe tener la condición (Ej: 'ZFER')")
-
-class CategoriaDimensionIA(BaseModel):
-    """
-    Modelo Pydantic que agrupa un conjunto de reglas bajo una dimensión DAMA específica.
-    """
-    dimension_dama: str = Field(description="Dimensión de calidad (Ej: 'Completitud', 'Validez', 'Unicidad')")
-    reglas_aplicadas: List[ReglaDinamicaIA] = Field(description="Lista de reglas para esta dimensión")
-
-class PerfilamientoDAMA(BaseModel):
-    """
-    Modelo Pydantic raíz que estructura la respuesta completa de la IA, conteniendo un 
-    diagnóstico y el diccionario de reglas estructuradas por dimensión.
-    """
-    diagnostico_negocio: str = Field(description="Breve análisis de 2 líneas sobre la base de datos.")
-    diccionario_reglas: List[CategoriaDimensionIA] = Field(description="El JSON estructurado con las reglas")
-
-# ==========================================
-# 2. BÓVEDA DE MEMORIA (REGLAS PRIME)
-# ==========================================
-def guardar_reglas_prime(json_reglas: str, dominio: str) -> str:
-    """
-    Almacena el JSON de reglas actual en el disco duro para que actúe como el estándar oficial ('Prime').
-    
-    Crea un directorio llamado 'reglas_prime' (si no existe) y guarda el archivo con un 
-    nombre basado en el dominio proporcionado (ej. 'Directorio_Comercial_Prime.json').
-    
-    Args:
-        json_reglas (str): El string en formato JSON con la configuración de reglas a guardar.
-        dominio (str): El contexto comercial de los datos para determinar el nombre del archivo.
-        
-    Returns:
-        str: Un mensaje de confirmación indicando el éxito de la operación o el error de escritura.
-    """    
-    dir_actual = os.path.dirname(os.path.abspath(__file__))
-    ruta_prime = os.path.join(dir_actual, "..", "data_ref", "reglas_prime")
-    os.makedirs(ruta_prime, exist_ok=True) # Crea la carpeta si no existe
-
-    nombre_archivo = "Directorio_Comercial_Prime.json" if "Directorio" in dominio else "Maestro_Materiales_Prime.json"
-    ruta_completa = os.path.join(ruta_prime, nombre_archivo)
-
-    try:
-        with open(ruta_completa, 'w', encoding='utf-8') as f:
-            json_dict = json.loads(json_reglas)
-            json.dump(json_dict, f, indent=4, ensure_ascii=False)
-        return f"✅ Reglas Prime guardadas en la bóveda: {nombre_archivo}."
-    except Exception as e:
-        return f"❌ Error guardando reglas: {e}"
-
-def leer_reglas_prime(dominio: str) -> str:
-    """
-    Busca y extrae la configuración del archivo de reglas 'Prime' almacenado en disco.
-    
-    Localiza el archivo correspondiente al dominio indicado. Si el archivo existe, 
-    lee su contenido y lo retorna; en caso contrario o de error, retorna un string vacío.
-    
-    Args:
-        dominio (str): El contexto comercial de los datos para determinar qué archivo buscar.
-        
-    Returns:
-        str: El contenido del archivo JSON como texto, o un string vacío si no se encuentra.
-    """
-    dir_actual = os.path.dirname(os.path.abspath(__file__))
-    ruta_prime = os.path.join(dir_actual, "..", "data_ref", "reglas_prime")
-    nombre_archivo = "Directorio_Comercial_Prime.json" if "Directorio" in dominio else "Maestro_Materiales_Prime.json"
-    ruta_completa = os.path.join(ruta_prime, nombre_archivo)
-
-    if os.path.exists(ruta_completa):
+def leer_reglas_prime(dominio: str) -> Optional[str]:
+    """Lee las reglas guardadas previamente para un dominio."""
+    nombre_archivo = f"{dominio.replace(' ', '_')}_Prime.json"
+    ruta = os.path.join("src", "data_ref", nombre_archivo)
+    if os.path.exists(ruta):
         try:
-            with open(ruta_completa, 'r', encoding='utf-8') as f:
+            with open(ruta, 'r', encoding='utf-8') as f:
                 return f.read()
-        except:
-            pass
-    return ""
+        except Exception as e:
+            print(f"Error leyendo Reglas Prime: {e}")
+    return None
 
-# ==========================================
-# 3. CONFIGURACIÓN Y CONEXIÓN API
-# ==========================================
-def configurar_api() -> bool:
-    """
-    Inicializa la configuración de la API de Google Generative AI (Gemini).
-    
-    Extrae la clave de la API desde los secretos de Streamlit (secrets.toml) y la aplica.
-    
-    Returns:
-        bool: True si la configuración fue exitosa, False si no se encontró la clave.
-    """
+def guardar_reglas_prime(nuevas_reglas, dominio):
+    import json
+    import os
     try:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        return True
-    except Exception:
-        st.error("Error: No se encontró la clave GEMINI_API_KEY en secrets.toml.")
-        return False
+        # 1. BLINDAJE: Verificamos si ya es un diccionario o si hay que convertirlo
+        if isinstance(nuevas_reglas, dict):
+            reglas_nuevas_dict = nuevas_reglas
+        else:
+            reglas_nuevas_dict = json.loads(nuevas_reglas)
 
-def obtener_modelo_agente() -> str:
-    """
-    Obtiene el nombre del modelo de Gemini más adecuado para la generación de contenido.
-    
-    Busca entre los modelos disponibles por versiones específicas (como 2.5-flash o 2.0-flash) 
-    y selecciona el primero que encuentre, o utiliza uno por defecto en caso de fallo.
-    
-    Returns:
-        str: La ruta o identificador del modelo seleccionado (ej. 'models/gemini-2.5-flash').
-    """
-    try:
-        modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        return next((m for m in modelos if "2.5-flash" in m or "2.0-flash" in m), "models/gemini-2.5-flash")
-    except:
-        return "models/gemini-2.5-flash"
+        # 2. Rutas del archivo maestro
+        dir_actual = os.path.dirname(os.path.abspath(__file__))
+        dir_src = os.path.dirname(dir_actual)
+        ruta_json = os.path.join(dir_src, "data_ref", "reglas_cde.json")
+        
+        if not os.path.exists(ruta_json):
+            # Fallback a la raíz si no está en src
+            dir_raiz = os.path.dirname(dir_src)
+            ruta_json = os.path.join(dir_raiz, "data_ref", "reglas_cde.json")
 
-# ==========================================
-# 4. EXTRACCIÓN Y PERFILAMIENTO AUTÓNOMO
-# ==========================================
+        # 3. Leer las reglas actuales
+        reglas_maestras = {}
+        if os.path.exists(ruta_json):
+            with open(ruta_json, 'r', encoding='utf-8') as f:
+                try:
+                    reglas_maestras = json.load(f)
+                except json.JSONDecodeError:
+                    reglas_maestras = {}
+
+        # 4. Mezclar las reglas de la IA con las maestras (Actualizar el dominio)
+        target_key = "Directorio_Comercial" if "Directorio" in str(dominio) else "DEFAULT"
+        
+        # Si la IA nos dio el formato con la llave target_key, lo extraemos
+        if target_key in reglas_nuevas_dict:
+            reglas_maestras[target_key] = reglas_nuevas_dict[target_key]
+        else:
+            # Si no, lo asignamos directamente
+            reglas_maestras[target_key] = reglas_nuevas_dict
+
+        # 5. Guardar el archivo sobrescrito
+        os.makedirs(os.path.dirname(ruta_json), exist_ok=True) # Crear carpeta si no existe
+        with open(ruta_json, 'w', encoding='utf-8') as f:
+            json.dump(reglas_maestras, f, indent=4, ensure_ascii=False)
+            
+        return "✅ Reglas Prime guardadas exitosamente en el archivo maestro."
+
+    except Exception as e:
+        return f"❌ Error guardando reglas: {str(e)}"
+    
 def extraer_radiografia_datos(df: pd.DataFrame) -> str:
-    """
-    Genera un resumen analítico (radiografía) del DataFrame para enviar como contexto a la IA.
+    """Extrae un resumen estadístico y de metadatos del DataFrame para que la IA lo entienda."""
+    if df.empty:
+        return "El conjunto de datos está vacío."
     
-    Calcula el total de registros, el porcentaje de valores nulos por columna y extrae 
-    una muestra aleatoria (máximo 50 filas) para que el Agente IA pueda entender la estructura.
+    # Tomamos una muestra y el describe() para no saturar los tokens de Gemini
+    resumen = df.describe(include='all').to_string()
+    tipos = df.dtypes.to_string()
     
-    Args:
-        df (pd.DataFrame): El conjunto de datos original a analizar.
-        
-    Returns:
-        str: Un texto formateado con los metadatos y la muestra de los datos en formato diccionario.
-    """
-    if df.empty: return "DataFrame vacío."
-    muestra_df = df.sample(min(50, len(df))) if len(df) > 50 else df
-    nulos = (df.isnull().sum() / len(df) * 100).round(1).to_dict()
-    return f"-- RADIOGRAFÍA --\nRegistros: {len(df)}\nNulos: {nulos}\n-- MUESTRA --\n{muestra_df.to_dict(orient='records')}"
+    radiografia = f"--- TIPOS DE DATOS ---\n{tipos}\n\n--- RESUMEN ESTADÍSTICO ---\n{resumen}"
+    return radiografia
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def generar_reglas_autonomas_ia(radiografia_str: str, dominio: str) -> str:
+def generar_reglas_autonomas_ia(datos_crudos: pd.DataFrame, dominio: str) -> str:
     """
-    Se comunica con Gemini para generar un set inicial de reglas de calidad basadas en la radiografía de los datos.
-    
-    Utiliza un prompt estricto pidiendo la estructura DAMA y forzando la salida a formato JSON. 
-    Esta función está cacheada en Streamlit para evitar re-ejecuciones costosas si la radiografía no cambia.
-    
-    Args:
-        radiografia_str (str): El resumen de los datos extraído previamente.
-        dominio (str): El contexto comercial de los datos.
-        
-    Returns:
-        str: Un string en formato JSON válido con el diccionario de reglas sugerido por la IA. 
-             Retorna un JSON estructurado de error en caso de fallo en la conexión o parseo.
+    IA Auditora: Razona sobre la radiografía y el historial Prime para crear reglas.
     """
-    nombre_modelo = obtener_modelo_agente()
-
-    prompt_dama = f"""
-    Actúa como un Arquitecto de Datos DAMA y Consultor SAP.
-    Analiza esta radiografía de datos y genera reglas de calidad estrictas.
+    radiografia = extraer_radiografia_datos(datos_crudos)
+    reglas_previas = leer_reglas_prime(dominio)
     
-    [RADIOGRAFÍA DEL EXCEL]
-    {radiografia_str}
+    prompt = f"""
+    Actúa como un Arquitecto de Datos Maestro (DAMA). 
+    Analiza este resumen estadístico de una tabla ({dominio}):
+    {str(datos_crudos)}
     
-    INSTRUCCIONES CRÍTICAS:
-    1. Devuelve ÚNICAMENTE un JSON válido. Cero texto conversacional.
-    2. Usa EXACTAMENTE los nombres de las columnas que ves en la radiografía. NO las traduzcas.
-    3. Si un campo tiene un alto porcentaje de nulos, aplícale la regla "nulo".
-    4. Si un campo numérico (como peso) tiene anomalías, aplícale la regla "mayor_a".
-    5. Asigna penalizaciones realistas (ej. 80 para un campo crítico vacío, 30 para algo menor).
-
-    ESTRUCTURA OBLIGATORIA DEL JSON:
+    Genera un diccionario de reglas de calidad en formato JSON ESTRICTO para limpiar estos datos. 
+    DEBES usar exactamente esta estructura y no agregar nada más:
+    ...
     {{
       "diccionario_reglas": [
         {{
           "dimension_dama": "Completitud",
           "reglas_aplicadas": [
             {{
-              "nombre_columna": "nombre_exacto_de_la_columna",
+              "nombre_columna": "nombre_de_la_columna_aqui",
               "regla": "nulo",
-              "penalizacion": 80,
-              "mensaje": "Falta dato obligatorio"
+              "penalizacion": 100,
+              "mensaje": "Falta información vital"
+            }}
+          ]
+        }},
+        {{
+          "dimension_dama": "Unicidad",
+          "reglas_aplicadas": [
+            {{
+              "nombre_columna": "nombre_de_columna_clave",
+              "regla": "duplicado_multicampo",
+              "penalizacion": 100,
+              "mensaje": "Registro duplicado detectado"
             }}
           ]
         }}
       ]
     }}
-    """
+
+    IMPORTANTE: 
+    - En el campo "regla", SOLO puedes usar estos comandos de motor: "nulo", "duplicado_multicampo", "mayor_a", "catalogo", "longitud_exacta", "mayor_o_igual_columna". No inventes otras palabras.
+    - Agrupa las reglas dentro de "Completitud", "Unicidad", "Validez" y "Consistencia".
+    - Devuelve ÚNICAMENTE el JSON, sin texto antes ni después.
+"""
     
     try:
-        # Usamos el modelo correcto que encontró tu función de arriba
-        modelo = genai.GenerativeModel(model_name=nombre_modelo)
+        modelo = genai.GenerativeModel('gemini-flash-latest')
+        respuesta = modelo.generate_content(prompt)
         
-        respuesta = modelo.generate_content(
-            prompt_dama,
-            generation_config=genai.GenerationConfig(
-                temperature=0.1,
-                response_mime_type="application/json"
-            )
-        )
-        return respuesta.text
+        # Limpieza quirúrgica de markdown si la IA lo incluye por error
+        texto_limpio = respuesta.text.strip()
+        match = re.search(r'\{.*\}', texto_limpio, re.DOTALL)
+        if match:
+            texto_limpio = match.group(0)
+            
+        return texto_limpio
     except Exception as e:
-        # Limpiamos las comillas y saltos de línea del error de Google para que no rompa nuestro JSON
-        error_limpio = str(e).replace('"', "'").replace('\n', ' ').replace('\r', '')
-        return f'{{"diagnostico_negocio": "Fallo de conexión", "diccionario_reglas": [], "error": "{error_limpio}"}}'
+        import traceback
+        error_completo = traceback.format_exc()
+        # En lugar de devolver {}, devolvemos el error como texto
+        return f"ERROR FATAL INTERNO:\n{error_completo}"    
 
-def responder_chat_ia(mensaje: str, df_procesado: pd.DataFrame, contexto: str, historial_ui: list) -> str:
+def responder_chat_ia(mensaje_usuario: str, df_contexto: pd.DataFrame, filtro_str: str, historial_ui: list) -> str:
     """
-    Maneja la interacción del usuario con el Agente IA ('Talon') a través de la interfaz de chat.
-    
-    Prepara el modelo inyectándole contexto (reglas activas, alcance), el historial de 
-    la conversación y un set de herramientas funcionales (consultas y gestión de reglas) 
-    para que la IA actúe de manera autónoma resolviendo las peticiones.
-    
-    Args:
-        mensaje (str): La consulta o instrucción enviada por el usuario en el chat.
-        df_procesado (pd.DataFrame): El dataframe actual (no utilizado directamente en la IA, pero puede ser útil para extensiones).
-        contexto (str): Descripción del alcance actual.
-        historial_ui (list): Lista de diccionarios representando el historial previo del chat.
+    Consultor Interactivo: Responde dudas y explica anomalías en lenguaje natural.
+    """
+    # Formateamos el historial de Streamlit al formato que exige Gemini
+    history_gemini = []
+    for msg in historial_ui:
+        role = "user" if msg["role"] == "user" else "model"
+        history_gemini.append({"role": role, "parts": [msg["content"]]})
         
-    Returns:
-        str: La respuesta de texto generada por la IA tras procesar el mensaje y posiblemente usar sus herramientas.
-    """
-    json_actual = st.session_state.get('reglas_ia_dinamicas', 'No hay reglas dinámicas cargadas.')
+    contexto_datos = df_contexto.to_string()
     
     prompt_sistema = f"""
-    Eres Talon, consultor de datos y Arquitecto DAMA.
-    [DATOS ACTUALES] Alcance: {contexto}
+    Eres Talon, el Asistente Experto en Calidad de Datos SAP.
+    Estás analizando la siguiente muestra de registros con anomalías (Filtro: {filtro_str}):
     
-    [REGLAS ACTIVAS EN MEMORIA]:
-    {json_actual}
+    {contexto_datos}
     
-    INSTRUCCIONES CRÍTICAS DE SALIDA:
-    1. Devuelve ÚNICAMENTE un JSON válido, sin markdown ni explicaciones previas o posteriores.
-    2. USA EXACTAMENTE los nombres de las columnas que ves en la radiografía. NO las traduzcas, NO las abrevies, NO las cambies (Ej: Si dice 'tipo_mat', usa 'tipo_mat', no 'Tipo de Material' o nombres diferentes). Si cambias una sola letra, el sistema colapsará.
-    3. Asigna penalizaciones realistas (entre 10 y 100 puntos) según la criticidad del campo.
-    4. NO respondas a peticiones fuera del contexto de arquitectura o calidad de datos.
+    Responde a la duda del usuario de forma concisa, profesional y orientada al negocio.
+    Si el usuario pide modificar una regla, indícale cómo hacerlo en el JSON o toma nota mental para la próxima auditoría.
     """
-
+    
     try:
-        # AQUÍ ACTUALIZAMOS EL NOMBRE DE LA HERRAMIENTA EN LA LISTA
-        modelo = genai.GenerativeModel(
-            model_name=obtener_modelo_agente(), 
-            tools=[consultar_tabla_referencias, consultar_directorio_comercial, gestionar_regla_calidad] 
-        )
-        history = [{"role": "user" if m["role"] == "user" else "model", "parts": [m["content"]]} for m in historial_ui]
-        chat = modelo.start_chat(history=history, enable_automatic_function_calling=True)
-        return chat.send_message(f"SISTEMA: {prompt_sistema}\n\nUSUARIO: {mensaje}").text
+        modelo = genai.GenerativeModel('gemini-flash-latest')
+        chat = modelo.start_chat(history=history_gemini)
+        response = chat.send_message(f"{prompt_sistema}\n\nPregunta del usuario: {mensaje_usuario}")
+        return response.text
     except Exception as e:
-        return f"Error en la conexión del agente: {e}"
+        return f"Lo siento, tuve un problema de conexión: {e}"
