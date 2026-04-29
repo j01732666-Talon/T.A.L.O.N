@@ -17,6 +17,7 @@ import pandas as pd
 import polars as pl
 import time
 import json
+import threading # <--- NUEVO
 
 from config import DOMINIOS_CONFIG, UNIDADES_REF, CUSTODIOS, NOMBRES_MATERIALES
 from core.motor_calidad import adaptar_reglas_ia_a_motor
@@ -27,7 +28,38 @@ from ui.ui_components import (renderizar_metricas, renderizar_grafico_dimensione
                                renderizar_grafico_por_foco)
 from infra.datalake_manager import inicializar_datalake, guardar_auditoria, obtener_historial_metricas
 from infra.auth_manager import inicializar_tabla_usuarios, registrar_usuario, validar_credenciales
-from infra.bigquery_client import extraer_maestro_materiales
+from infra.bigquery_client import extraer_materiales_pendientes, cargar_resultados_auditoria, extraer_anomalias_pendientes
+# --- NUEVA VERSIÓN: FUNCIÓN DE AUDITORÍA CON ACTUALIZACIÓN DE UI ---
+def ejecutar_auditoria_background(df_pendientes, dominio, reglas):
+    try:
+        print("Empezando auditoría en segundo plano...")
+        # 1. Ejecutar el motor
+        df_auditado, _ = ejecutar_auditoria_completa(
+            df_pendientes, UNIDADES_REF, None, dominio, reglas
+        )
+        print("Auditoría terminada. Preparando para guardar en BigQuery...")
+        
+        # 2. Guardar en Session State para que la UI los muestre DE INMEDIATO
+        # Convertimos a Pandas para que Streamlit lo pueda pintar
+        import pandas as pd
+        if isinstance(df_auditado, pl.DataFrame):
+            df_pandas = df_auditado.to_pandas()
+        else:
+            df_pandas = df_auditado.copy()
+            
+        st.session_state['datos_crudos_bd'] = df_pandas
+        st.session_state['origen_datos'] = "TalonDB (BigQuery)"
+
+        # 3. Intentar guardar en BigQuery
+        try:
+            filas_insertadas = cargar_resultados_auditoria(df_auditado)
+            print(f"✅ ÉXITO: {filas_insertadas} registros guardados en BigQuery.")
+        except Exception as e_bq:
+            print(f"❌ ERROR AL GUARDAR EN BIGQUERY: {e_bq}")
+            
+    except Exception as e:
+        print(f"❌ ERROR FATAL EN EL MOTOR: {e}")
+# -------------------------------------------------------------------
 
 inicializar_datalake()
 inicializar_tabla_usuarios()
@@ -479,25 +511,43 @@ else:
                 st.session_state['origen_datos'] = archivo_subido.name
         else:
             st.markdown(
-                "<p style='font-size:11px;color:#8B949E;"
-                "font-family:\"IBM Plex Sans\",sans-serif;'>☁ BigQuery / SAP</p>",
+                "<p style='font-size:11px;color:#8B949E;font-family:\"IBM Plex Sans\",sans-serif;'>☁ Panel de Gobierno (TalonDB)</p>",
                 unsafe_allow_html=True,
             )
-            if st.button("Extraer Datos de TalonDB",
-                         type="primary",
-                         use_container_width=True):
-                with st.spinner("Conectando a GCP..."):
-                    try:
-                        df_polars = extraer_maestro_materiales()
-                        if df_polars is not None:
-                            st.session_state['datos_crudos_bd'] = df_polars.to_pandas()
-                            st.session_state['origen_datos'] = "TalonDB (BigQuery)"
-                            st.success("Extracción exitosa.")
-                            time.sleep(1)
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"{str(e)}")
+            
+            # --- BOTÓN 1: El motor asíncrono (El que ya hicimos) ---
+            if st.button("1. Buscar Nuevos (Sincronizar)", type="secondary", use_container_width=True):
+                with st.spinner("Buscando registros nuevos..."):
+                    df_pendientes = extraer_materiales_pendientes()
+                    if df_pendientes is not None and len(df_pendientes) > 0:
+                        st.info(f"📦 Se procesarán {len(df_pendientes)} registros nuevos en segundo plano.")
+                        reglas_activas = st.session_state.get('reglas_ia_dinamicas')
+                        hilo = threading.Thread(
+                            target=ejecutar_auditoria_background,
+                            args=(df_pendientes, dominio_seleccionado, reglas_activas)
+                        )
+                        hilo.start()
+                    else:
+                        st.success("✅ Todo está al día. No hay registros nuevos en SAP.")
 
+            st.write("") # Espacio en blanco
+
+            # --- BOTÓN 2: El que carga tu pantalla de trabajo ---
+            if st.button("2. Cargar Tablero de Trabajo", type="primary", use_container_width=True):
+                with st.spinner("Cargando anomalías desde BigQuery..."):
+                    try:
+                        df_malos = extraer_anomalias_pendientes()
+                        if df_malos is not None and len(df_malos) > 0:
+                            # Le entregamos los datos crudos a Streamlit para que los procese y los muestre
+                            st.session_state['datos_crudos_bd'] = df_malos.to_pandas()
+                            st.session_state['origen_datos'] = "TalonDB (Pendientes)"
+                            st.success(f"📥 Se cargaron {len(df_malos)} registros para corregir.")
+                            # Forzamos la recarga de la pantalla para que aparezca la tabla
+                            st.rerun() 
+                        else:
+                            st.success("✨ ¡Felicidades! No tienes ninguna anomalía pendiente por gestionar.")
+                    except Exception as e:
+                        st.error(f"Error cargando el tablero: {str(e)}")
         if 'datos_crudos_bd' in st.session_state:
             datos_crudos = st.session_state['datos_crudos_bd']
 
@@ -780,7 +830,13 @@ else:
 
         with tab_datos:
             try:
-                renderizar_tabla_hallazgos(df_display)
+                # Mostrar solo lo que el sistema marcó como "Malo" (0)
+                df_solo_fallas = df_display[df_display['Estado_Gestion'] == 0]
+                
+                if not df_solo_fallas.empty:
+                    renderizar_tabla_hallazgos(df_solo_fallas)
+                else:
+                    st.success("✨ ¡Felicidades! No se encontraron anomalías pendientes.")
             except Exception as e:
                 st.error(f"Error técnico en la tabla: {e}")
 
