@@ -245,17 +245,28 @@ def ejecutar_auditoria_completa(datos_entrada, unidades, focos, dominio="Maestro
             if config["regla"] == "nulo":
                 
                 # --- LA CURA ANTI-NAN ---
-                # Forzamos todo a texto minúscula y atrapamos los falsos vacíos ("nan", "nat", "null", "")
                 col_str = pl.col(col).cast(pl.Utf8).str.to_lowercase().str.strip_chars()
                 mask_regla = mask_tipo & (pl.col(col).is_null() | (col_str == '') | (col_str == 'nan') | (col_str == 'nat') | (col_str == 'null'))
-                # ------------------------
                 
                 if config.get("condicion_columna") in df.columns and config.get("condicion_valor"):
                     mask_regla = mask_regla & (pl.col(config["condicion_columna"]).cast(pl.Utf8) == str(config["condicion_valor"]))
                 
+                # --- NUEVO: CREACIÓN DINÁMICA DEL CAMPO BOOLEANO ---
+                # 1. Armamos el nombre exacto de la BD (ej: SKU_nulo)
+                col_bd = f"{col}_{config['regla']}"
+                
+                # 2. Si la columna no existe aún, la creamos asumiendo True (1 = Todo bien)
+                if col_bd not in df.columns:
+                    df = df.with_columns(pl.lit(True).alias(col_bd))
+                # --------------------------------------------------
+
+                # 3. Actualizamos el DataFrame
                 df = df.with_columns([
                     pl.when(mask_regla).then(pl.col('Score_Completitud') - config['penalizacion']).otherwise(pl.col('Score_Completitud')).alias('Score_Completitud'),
-                    pl.when(mask_regla).then(pl.col('Hallazgos_Detallados') + config['mensaje'] + ", ").otherwise(pl.col('Hallazgos_Detallados')).alias('Hallazgos_Detallados')
+                    pl.when(mask_regla).then(pl.col('Hallazgos_Detallados') + config['mensaje'] + ", ").otherwise(pl.col('Hallazgos_Detallados')).alias('Hallazgos_Detallados'),
+                    
+                    # NUEVO: Si falla la regla (mask_regla), ponemos False (0). Si no, conservamos el valor que traía.
+                    pl.when(mask_regla).then(False).otherwise(pl.col(col_bd)).alias(col_bd)
                 ])
 
         # C. VALIDEZ
@@ -331,13 +342,21 @@ def ejecutar_auditoria_completa(datos_entrada, unidades, focos, dominio="Maestro
     # =========================================================================
     # LIMPIEZA FINAL Y RESUMEN
     # =========================================================================
-    df = df.with_columns(
-        pl.when(pl.col('Hallazgos_Detallados') == "")
-        .then(pl.lit("Sin Errores"))
-        .otherwise(pl.col('Hallazgos_Detallados').str.replace(r", $", ""))
-        .alias('Hallazgos_Detallados')
-    )
+
+
     
+    # =========================================================================
+    # ESTADO DE GESTIÓN (Para la BD)
+    # =========================================================================
+    df = df.with_columns([
+        # Si el Score_Calidad es 100 (sin fallas), Estado_Gestion = 1. Si falla algo, 0.
+        pl.when(pl.col('Score_Calidad') == 100.0).then(1).otherwise(0).alias('Estado_Gestion'),
+        
+        # Las descripciones como las pide la tabla
+        pl.when(pl.col('Score_Calidad') == 100.0).then(pl.lit("Bueno")).otherwise(pl.lit("Malo")).alias('Estado_Gestion_Desc')
+    ])
+    
+    # Finalmente convertimos a Pandas
     pdf = df.to_pandas()
     
     pdf['Score_Unicidad'] = pdf['Score_Unicidad'].clip(lower=0)
