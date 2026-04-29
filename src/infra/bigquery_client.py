@@ -20,7 +20,7 @@ def extraer_maestro_materiales():
         client = bigquery.Client(credentials=credentials, project=credentials.project_id)
 
         # 4. Ejecutamos la consulta
-        query = "SELECT * FROM `brinsa-it-data-lake.SC_TALON.VW_MAESTRO MATERIALES`"
+        query = "SELECT * FROM `brinsa-it-data-lake.SC_TALON.VW_MAESTRO_MATERIALES`"
         query_job = client.query(query)
         
         # 5. Retornamos los datos en Polars

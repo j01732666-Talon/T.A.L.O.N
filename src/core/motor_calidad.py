@@ -370,7 +370,7 @@ def generar_excel_saneamiento_memoria(df: pd.DataFrame) -> bytes:
     if 'ID DATO' in df.columns or 'Cliente' in df.columns or 'Proveedor' in df.columns:
         columnas_ideales = ['SKU_num', 'Desc_Material', 'Dirección', 'Correo electrónico', 'Teléfono', 'Clave de país/región', 'Score_Calidad']
     else:
-        columnas_ideales = ['SKU_num', 'tipo_mat', 'Desc_Material', 'cod_UEN', 'cod_grupo_art', 'EAN13', 'SKU_anterior', 'peso_neto', 'peso_bruto', 'UoM_peso', 'empaque_SAP', 'Score_Calidad']
+        columnas_ideales = ['SKU', 'SKU_num', 'tipo_mat', 'Desc_Material', 'cod_UEN', 'cod_grupo_art', 'EAN13', 'SKU_anterior', 'peso_neto', 'peso_bruto', 'UoM_peso', 'empaque_SAP', 'Score_Calidad']
     
     columnas_finales = [col for col in columnas_ideales if col in df_lite.columns]
     
