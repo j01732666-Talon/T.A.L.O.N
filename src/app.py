@@ -18,7 +18,9 @@ import polars as pl
 import time
 import json
 import threading # <--- NUEVO
+import os       
 
+from streamlit_google_auth import Authenticate
 from config import DOMINIOS_CONFIG, UNIDADES_REF, CUSTODIOS, NOMBRES_MATERIALES
 from core.motor_calidad import adaptar_reglas_ia_a_motor
 from core.motor_calidad import ejecutar_auditoria_completa, generar_excel_saneamiento_memoria
@@ -29,6 +31,68 @@ from ui.ui_components import (renderizar_metricas, renderizar_grafico_dimensione
 from infra.datalake_manager import inicializar_datalake, guardar_auditoria, obtener_historial_metricas
 from infra.auth_manager import inicializar_tabla_usuarios, registrar_usuario, validar_credenciales
 from infra.bigquery_client import extraer_materiales_pendientes, cargar_resultados_auditoria, extraer_anomalias_pendientes
+
+import streamlit as st
+import json
+import os
+from streamlit_google_auth import Authenticate
+
+# 0. CONFIGURACIÓN DE PÁGINA (Debe ser SIEMPRE el primer comando)
+st.set_page_config(
+    page_title="T.A.L.O.N — Auditoría de Datos",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# --- 1. INICIALIZAR EL AUTENTICADOR SSO ---
+RUTA_CREDENCIALES = "credenciales_sso.json"
+
+if not os.path.exists(RUTA_CREDENCIALES):
+    st.error(f"No se encontró el archivo de credenciales: {RUTA_CREDENCIALES}")
+    st.stop()
+
+auth = Authenticate(
+    secret_credentials_path=RUTA_CREDENCIALES,
+    cookie_name="talon_sso_session",
+    cookie_key="clave_fija_para_cookies_talon_2024",
+    redirect_uri="http://localhost:8501/"
+)
+
+# --- 2. VERIFICAR SESIÓN (EL "PORTERO") ---
+if not st.session_state.get("connected"):
+    # =========================================================
+    # PANTALLA DE LOGIN (Usuario NO Autenticado)
+    # =========================================================
+    st.markdown("<br><br><br>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; font-size: 50px;'>T.A.L.O.N.</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #8B949E; font-size: 18px;'>Tablero Analítico de Limpieza y Orquestación de Negocios</p>", unsafe_allow_html=True)
+    
+    st.divider()
+    
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        st.info("Sistema de acceso restringido. Por favor, autentícate con tu cuenta corporativa.")
+        auth.login()
+    
+    
+    st.stop()
+
+# =========================================================
+# APLICACIÓN T.A.L.O.N. (Usuario Autenticado)
+# =========================================================
+
+# 🚀 EL PUENTE: Le damos a tu código de abajo la variable exacta que está buscando
+st.session_state['usuario_actual'] = st.session_state['user_info'].get('email', 'Usuario SSO')
+
+with st.sidebar:
+    st.markdown("###Perfil Corporativo")
+    st.write(f"**Nombre:** {st.session_state['user_info'].get('name')}")
+    st.write(f"**Correo:** {st.session_state['user_info'].get('email')}")
+    st.divider()
+    if st.button("Cerrar Sesión", use_container_width=True):
+        auth.logout()
+
+
 # --- NUEVA VERSIÓN: FUNCIÓN DE AUDITORÍA CON ACTUALIZACIÓN DE UI ---
 def ejecutar_auditoria_background(df_pendientes, dominio, reglas):
     try:
@@ -340,127 +404,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ─────────────────────────────────────────────
-#  ESTADO INICIAL
-# ─────────────────────────────────────────────
-defaults = {
-    'autenticado':      False,
-    'usuario_actual':   "",
-    'chat_historial':   [],
-    'reglas_ia_dinamicas': None,
-    'mostrar_registro': False,
-}
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-dominio_oficial = st.secrets.get("dominio_empresa", "@brinsa.com.co")
-
-
-# ═══════════════════════════════════════════════════════════════
-#  FLUJO DE AUTENTICACIÓN
-# ═══════════════════════════════════════════════════════════════
-if not st.session_state['autenticado']:
-    _, col_login, _ = st.columns([1, 1.1, 1])
-
-    with col_login:
-        st.markdown("<div style='margin-top:8vh;'></div>", unsafe_allow_html=True)
-
-        # Logo / título
-        st.markdown(
-            """
-            <div style="text-align:center;margin-bottom:32px;">
-              <p style="font-family:'IBM Plex Mono',monospace;font-size:10px;
-                font-weight:600;letter-spacing:3px;color:#8B949E;
-                text-transform:uppercase;margin-bottom:8px;">
-                Sistema de Auditoría
-              </p>
-              <h1 style="font-family:'IBM Plex Mono',monospace;font-size:36px;
-                font-weight:700;color:#E6EDF3;letter-spacing:-1px;margin:0;">
-                T.A.L.O.N
-              </h1>
-              <p style="font-family:'IBM Plex Sans',sans-serif;font-size:12px;
-                color:#484F58;margin-top:6px;letter-spacing:.3px;">
-                Tablero Analítico de Limpieza y Orquestación de Negocios
-              </p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if not st.session_state['mostrar_registro']:
-            st.markdown(
-                "<p class='t-label' style='margin-bottom:20px;'>Acceso a la plataforma</p>",
-                unsafe_allow_html=True,
-            )
-            with st.form("formulario_login"):
-                correo_login   = st.text_input("Correo corporativo",
-                                               placeholder=f"usuario{dominio_oficial}")
-                password_login = st.text_input("Contraseña", type="password")
-                st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-                if st.form_submit_button("INICIAR SESIÓN",
-                                         type="primary",
-                                         use_container_width=True):
-                    if validar_credenciales(correo_login, password_login):
-                        from infra.auth_manager import registrar_ingreso
-                        registrar_ingreso(correo_login.lower())
-                        st.session_state['autenticado']    = True
-                        st.session_state['usuario_actual'] = correo_login.lower()
-                        st.rerun()
-                    else:
-                        st.error("Credenciales incorrectas.")
-
-            st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
-            if st.button("¿Sin cuenta? Regístrate aquí",
-                         use_container_width=True):
-                st.session_state['mostrar_registro'] = True
-                st.rerun()
-
-        else:
-            st.markdown(
-                "<p class='t-label' style='margin-bottom:20px;'>Nuevo usuario</p>",
-                unsafe_allow_html=True,
-            )
-            with st.form("formulario_registro"):
-                correo_registro   = st.text_input("Correo corporativo",
-                                                   placeholder=f"usuario{dominio_oficial}")
-                password_registro = st.text_input("Crear contraseña", type="password")
-                password_confirm  = st.text_input("Confirmar contraseña", type="password")
-                st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-                if st.form_submit_button("CREAR CUENTA",
-                                         type="primary",
-                                         use_container_width=True):
-                    if password_registro != password_confirm:
-                        st.error("Las contraseñas no coinciden.")
-                    else:
-                        exito, mensaje = registrar_usuario(
-                            correo_registro, password_registro, dominio_oficial
-                        )
-                        if exito:
-                            st.success("Cuenta creada. Ya puedes iniciar sesión.")
-                            st.session_state['mostrar_registro'] = False
-                            time.sleep(2)
-                            st.rerun()
-                        else:
-                            st.error(mensaje)
-
-            st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
-            if st.button("← Volver al inicio de sesión",
-                         use_container_width=True):
-                st.session_state['mostrar_registro'] = False
-                st.rerun()
-
-
 # ═══════════════════════════════════════════════════════════════
 #  ÁREA AUTENTICADA
 # ═══════════════════════════════════════════════════════════════
-else:
-    def procesar_datos(datos_entrada, unidades, focos, dominio, reglas_ia):
+def procesar_datos(datos_entrada, unidades, focos, dominio, reglas_ia):
         return ejecutar_auditoria_completa(datos_entrada, unidades,
                                            focos, dominio, reglas_ia)
 
     # ── Sidebar ──────────────────────────────────────────────
-    with st.sidebar:
+with st.sidebar:
         # Marca / usuario
         st.markdown(
             f"""
@@ -494,10 +446,10 @@ else:
         st.divider()
 
     # ── Carga de datos ───────────────────────────────────────
-    archivo_subido = None
-    datos_crudos   = None
+archivo_subido = None
+datos_crudos   = None
 
-    with st.sidebar:
+with st.sidebar:
         if fuente_datos == "Archivo Local (.xlsx)":
             archivo_subido = st.file_uploader("Cargar extracción", type=["xlsx"])
             if archivo_subido:
@@ -552,7 +504,7 @@ else:
             datos_crudos = st.session_state['datos_crudos_bd']
 
     # ── Botón IA ─────────────────────────────────────────────
-    with st.sidebar:
+with st.sidebar:
         if datos_crudos is not None:
             st.divider()
             if st.button("Autoperfilar con IA",
@@ -572,7 +524,7 @@ else:
                     st.rerun()
 
     # ── Reglas IA en sidebar ─────────────────────────────────
-    with st.sidebar:
+with st.sidebar:
         if st.session_state.get('reglas_ia_dinamicas'):
             st.divider()
             st.markdown("<p class='t-label'>Reglas activas de Talon</p>",
@@ -607,7 +559,7 @@ else:
                                     )
 
     # ── Cuerpo principal ─────────────────────────────────────
-    if datos_crudos is not None:
+if datos_crudos is not None:
         reglas_actuales = st.session_state.get('reglas_ia_dinamicas')
         df_res, res_original = procesar_datos(
             datos_crudos, UNIDADES_REF, None, dominio_seleccionado, reglas_actuales
@@ -864,7 +816,7 @@ else:
                 )
 
     # ── Pantalla de espera (sin datos) ───────────────────────
-    else:
+else:
         with st.sidebar:
             st.divider()
             if st.button("Cerrar Sesión",
