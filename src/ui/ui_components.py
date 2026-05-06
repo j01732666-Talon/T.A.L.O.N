@@ -10,6 +10,7 @@ import altair as alt
 import itertools
 from collections import Counter
 from typing import Dict, Any
+import polars as pl
 
 # ─────────────────────────────────────────────
 #  SISTEMA DE COLORES CENTRALIZADO
@@ -310,83 +311,57 @@ def renderizar_grafico_por_foco(df_procesado: pd.DataFrame) -> None:
 # ─────────────────────────────────────────────
 #  SECCIÓN: EXPLORADOR DE ANOMALÍAS
 # ─────────────────────────────────────────────
-def renderizar_tabla_hallazgos(df: pd.DataFrame):
-    """Muestra registros con errores con columnas dinámicas por hallazgo."""
-    st.markdown(
-        f"<p style='font-family:\"IBM Plex Mono\",monospace;"
-        f"font-size:11px;font-weight:600;letter-spacing:1.5px;"
-        f"color:{COLOR_TEXTO_SEC};text-transform:uppercase;"
-        f"margin-bottom:12px;'>Explorador de Anomalías</p>",
-        unsafe_allow_html=True
-    )
+import streamlit as st
+import pandas as pd
+import polars as pl
 
-    if 'Score_Calidad' not in df.columns:
-        st.info("Ejecuta la auditoría para visualizar los datos anómalos.")
+def renderizar_tabla_hallazgos(df_resultados):
+    """
+    Renderiza la tabla de hallazgos sin ruido visual. 
+    Solo muestra lo vital y las columnas dinámicas de anomalías.
+    """
+    if df_resultados is None or len(df_resultados) == 0:
+        st.info("No hay hallazgos o anomalías para mostrar.")
         return
 
-    df_mostrar = df[df['Score_Calidad'] < 99.9].copy()
+    # 1. Asegurar formato Pandas
+    if isinstance(df_resultados, pl.DataFrame):
+        df = df_resultados.to_pandas()
+    else:
+        df = df_resultados.copy()
 
-    if df_mostrar.empty:
-        _alerta_vacia("Sin anomalías detectadas en esta vista.")
-        return
+    # 2. Las columnas EXACTAS que queremos ver fijas al inicio
+    columnas_principales = ["SKU", "Desc_Material", "Estado_Gestion", "tipo_mat", "Score_Calidad"]
+    columnas_mostrar = [col for col in columnas_principales if col in df.columns]
 
-    # Contador de afectados
-    n = len(df_mostrar)
-    st.markdown(
-        f"<div style='"
-        f"background:{COLOR_FONDO_CARD};"
-        f"border-left:3px solid {COLOR_NARANJA};"
-        f"border-radius:4px;"
-        f"padding:10px 16px;"
-        f"margin-bottom:16px;"
-        f"font-family:\"IBM Plex Mono\",monospace;"
-        f"font-size:12px;"
-        f"color:{COLOR_TEXTO_PRIM};"
-        f"'>{n} registros con oportunidades de mejora</div>",
-        unsafe_allow_html=True
-    )
+    # 3. Lista negra: Todo el ruido de SAP y BigQuery que NO queremos ver en pantalla
+    ruido_sap = [
+        "SKU_num", "SKU_anterior", "Tipo_Material", "UoM", "cod_UEN", "UEN", 
+        "cod_marca", "marca", "cod_divprd", "tipo_industria_divprd", 
+        "cod_grupo_mat", "grupo_material", "cod_grupo_art", "grupo_articulo", 
+        "cod_grup_art_ext", "grupo_art_ext", "empaque_SAP", "tipo_empaque", 
+        "cod_contenido", "contenido_SAP", "marca_comercial", "item_categ", 
+        "EAN13", "EAN14", "peso_bruto", "peso_neto", "UoM_peso", 
+        "fecha_creacion", "creado_por", "fecha_actualiza", "actualizado_por",
+        "Usuario_Auditor", "Fecha_Ingreso", "Fecha_Actualizacion", "Estado_Gestion_Desc", 
+        "Hallazgos_Detallados", "Score_Unicidad", "Score_Completitud", "Score_Validez", "Score_Consistencia"
+    ]
 
-    # Columnas dinámicas por tipo de error
-    lista_errores = (
-        df_mostrar['Hallazgos_Detallados']
-        .dropna().astype(str).str.split(', ').tolist()
-    )
-    errores_unicos = sorted({
-        e for sub in lista_errores for e in sub
-        if e not in ('Sin Errores', 'nan', '')
-    })
+    # 4. Extraer únicamente las columnas de anomalías (Las reglas que dan True/False)
+    # Si no está en las principales y no es ruido, ¡es una regla!
+    columnas_anomalias = [col for col in df.columns if col not in columnas_mostrar and col not in ruido_sap]
 
-    for error in errores_unicos:
-        df_mostrar[error] = df_mostrar['Hallazgos_Detallados'].apply(
-            lambda x: "❌" if error in str(x) else ""
+    # 5. Armar la tabla final limpia
+    df_final = df[columnas_mostrar + columnas_anomalias]
+
+    # 6. Formato visual de Estado_Gestion
+    if "Estado_Gestion" in df_final.columns:
+        df_final["Estado_Gestion"] = df_final["Estado_Gestion"].apply(
+            lambda x: "❌" if x == 0 else ("✅" if x == 1 else x)
         )
 
-    # Columnas base según dominio
-    if 'Dirección' in df.columns or 'Cliente' in df.columns:
-        cols_base = ['Score_Calidad', 'SKU_num', 'Desc_Material',
-                     'Dirección', 'Correo electrónico',
-                     'Teléfono', 'Clave de país/región']
-    else:
-        cols_base = ['Score_Calidad', 'SKU_num', 'Desc_Material', 'tipo_mat']
-
-    columnas_tabla = [c for c in cols_base if c in df_mostrar.columns] + errores_unicos
-
-    df_mostrar['Score_Calidad'] = (
-        pd.to_numeric(df_mostrar['Score_Calidad'], errors='coerce')
-        .fillna(0).round(1)
-    )
-
-    st.dataframe(
-        df_mostrar[columnas_tabla].sort_values("Score_Calidad"),
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Score_Calidad": st.column_config.ProgressColumn(
-                "Calidad", format="%d%%", min_value=0, max_value=100
-            )
-        },
-    )
-
+    # 7. Renderizar en Streamlit
+    st.dataframe(df_final, use_container_width=True, hide_index=True)
 
 # ─────────────────────────────────────────────
 #  HELPERS INTERNOS

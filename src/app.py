@@ -53,12 +53,12 @@ def ejecutar_auditoria_background(df_pendientes, dominio, reglas):
         # 3. Intentar guardar en BigQuery
         try:
             filas_insertadas = cargar_resultados_auditoria(df_auditado)
-            print(f"✅ ÉXITO: {filas_insertadas} registros guardados en BigQuery.")
+            print(f"ÉXITO: {filas_insertadas} registros guardados en BigQuery.")
         except Exception as e_bq:
-            print(f"❌ ERROR AL GUARDAR EN BIGQUERY: {e_bq}")
+            print(f"ERROR AL GUARDAR EN BIGQUERY: {e_bq}")
             
     except Exception as e:
-        print(f"❌ ERROR FATAL EN EL MOTOR: {e}")
+        print(f"ERROR FATAL EN EL MOTOR: {e}")
 # -------------------------------------------------------------------
 
 inicializar_datalake()
@@ -520,7 +520,7 @@ else:
                 with st.spinner("Buscando registros nuevos..."):
                     df_pendientes = extraer_materiales_pendientes()
                     if df_pendientes is not None and len(df_pendientes) > 0:
-                        st.info(f"📦 Se procesarán {len(df_pendientes)} registros nuevos en segundo plano.")
+                        st.info(f"Se procesarán {len(df_pendientes)} registros nuevos en segundo plano.")
                         reglas_activas = st.session_state.get('reglas_ia_dinamicas')
                         hilo = threading.Thread(
                             target=ejecutar_auditoria_background,
@@ -528,7 +528,7 @@ else:
                         )
                         hilo.start()
                     else:
-                        st.success("✅ Todo está al día. No hay registros nuevos en SAP.")
+                        st.success("Todo está al día. No hay registros nuevos en SAP.")
 
             st.write("") # Espacio en blanco
 
@@ -541,11 +541,11 @@ else:
                             # Le entregamos los datos crudos a Streamlit para que los procese y los muestre
                             st.session_state['datos_crudos_bd'] = df_malos.to_pandas()
                             st.session_state['origen_datos'] = "TalonDB (Pendientes)"
-                            st.success(f"📥 Se cargaron {len(df_malos)} registros para corregir.")
+                            st.success(f"Se cargaron {len(df_malos)} registros para corregir.")
                             # Forzamos la recarga de la pantalla para que aparezca la tabla
                             st.rerun() 
                         else:
-                            st.success("✨ ¡Felicidades! No tienes ninguna anomalía pendiente por gestionar.")
+                            st.success("¡Felicidades! No tienes ninguna anomalía pendiente por gestionar.")
                     except Exception as e:
                         st.error(f"Error cargando el tablero: {str(e)}")
         if 'datos_crudos_bd' in st.session_state:
@@ -836,7 +836,7 @@ else:
                 if not df_solo_fallas.empty:
                     renderizar_tabla_hallazgos(df_solo_fallas)
                 else:
-                    st.success("✨ ¡Felicidades! No se encontraron anomalías pendientes.")
+                    st.success("¡Felicidades! No se encontraron anomalías pendientes.")
             except Exception as e:
                 st.error(f"Error técnico en la tabla: {e}")
 

@@ -116,7 +116,7 @@ def adaptar_reglas_ia_a_motor(json_ia_str, dominio):
         return reglas_adaptadas
     except Exception as e:
         import streamlit as st
-        st.error(f"⚠️ Error traduciendo IA a Polars: {e}")
+        st.error(f" Error traduciendo IA a Polars: {e}")
         return None
 
 
@@ -344,7 +344,7 @@ def ejecutar_auditoria_completa(datos_entrada, unidades, focos, dominio="Maestro
     # =========================================================================
 
 
-    
+
     # =========================================================================
     # ESTADO DE GESTIÓN (Para la BD)
     # =========================================================================
@@ -376,10 +376,12 @@ def ejecutar_auditoria_completa(datos_entrada, unidades, focos, dominio="Maestro
 
     return pdf, resumen
 
+import pandas as pd
+import io
+
 def generar_excel_saneamiento_memoria(df: pd.DataFrame) -> bytes:
     """Genera el Excel con los errores separados en columnas individuales marcadas con X."""
     if df.empty: return b""
-    import io
     output = io.BytesIO()
     
     df_lite = df[df['Score_Calidad'] < 100].copy()
@@ -389,7 +391,7 @@ def generar_excel_saneamiento_memoria(df: pd.DataFrame) -> bytes:
     if 'ID DATO' in df.columns or 'Cliente' in df.columns or 'Proveedor' in df.columns:
         columnas_ideales = ['SKU_num', 'Desc_Material', 'Dirección', 'Correo electrónico', 'Teléfono', 'Clave de país/región', 'Score_Calidad']
     else:
-        columnas_ideales = ['SKU', 'SKU_num', 'tipo_mat', 'Desc_Material', 'cod_UEN', 'cod_grupo_art', 'EAN13', 'SKU_anterior', 'peso_neto', 'peso_bruto', 'UoM_peso', 'empaque_SAP', 'Score_Calidad']
+        columnas_ideales = ['SKU', 'SKU_num', 'tipo_mat', 'Desc_Material', 'Score_Calidad']
     
     columnas_finales = [col for col in columnas_ideales if col in df_lite.columns]
     
@@ -415,7 +417,7 @@ def generar_excel_saneamiento_memoria(df: pd.DataFrame) -> bytes:
         # Pestaña maestra con todas las columnas
         df_export.to_excel(writer, index=False, sheet_name='Matriz_Saneamiento')
         
-        # Pestañas individuales (Mantiene tu funcionalidad original, pero con las columnas "X")
+        # Pestañas individuales 
         for falla in fallas_unicas:
             df_falla = df_export[df_export[falla] == "X"]
             if not df_falla.empty:
@@ -426,6 +428,11 @@ def generar_excel_saneamiento_memoria(df: pd.DataFrame) -> bytes:
                 while nombre_hoja in hojas_existentes:
                     nombre_hoja = f"{base_nombre[:28]}_{contador}"
                     contador += 1
-                df_falla.to_excel(writer, index=False, sheet_name=nombre_hoja)
+                
+                # 🚀 EL TRUCO ESTÁ AQUÍ: Creamos una lista solo con lo base + esta falla
+                columnas_limpias = columnas_finales + [falla]
+                
+                # Exportamos usando esa lista reducida de columnas
+                df_falla[columnas_limpias].to_excel(writer, index=False, sheet_name=nombre_hoja)
         
     return output.getvalue()
