@@ -21,7 +21,7 @@ def cargar_catalogos_maestros():
         except Exception as e:
             print(f"Error leyendo el JSON de catálogos: {e}")
     else:
-        print(f"⚠️ Atención: No se encontró el archivo de catálogos en: {RUTA_CATALOGOS}")
+        print(f"Atención: No se encontró el archivo de catálogos en: {RUTA_CATALOGOS}")
     return {}
 
 # --- 3. CREACIÓN DE LA VARIABLE GLOBAL (¡SIN ESPACIOS A LA IZQUIERDA!) ---
@@ -43,7 +43,7 @@ def configurar_api_ia():
     try:
         api_key = st.secrets.get("GEMINI_API_KEY")
         if not api_key:
-            print("⚠️ ADVERTENCIA: No se encontró la GEMINI_API_KEY en .streamlit/secrets.toml.")
+            print("ADVERTENCIA: No se encontró la GEMINI_API_KEY en .streamlit/secrets.toml.")
             return False
             
         genai.configure(api_key=api_key)
