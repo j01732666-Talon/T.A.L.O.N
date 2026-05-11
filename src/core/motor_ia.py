@@ -1,5 +1,5 @@
 """
-Motor de IA para T.A.L.O.N. 
+Motor de IA para T.A.L.O.N.
 Responsable del perfilamiento autónomo y la asistencia conversacional.
 Totalmente desacoplado de Streamlit.
 """
@@ -9,6 +9,53 @@ import os
 import google.generativeai as genai
 import pandas as pd
 from typing import Optional
+from config import obtener_modelo_agente, configurar_api_ia
+
+
+def _manejar_error_ia(exc: Exception) -> str:
+    """
+    Convierte cualquier excepción de la API de Gemini en un mensaje limpio
+    para el usuario. Detecta cuota excedida (429) y errores de red.
+    """
+    msg = str(exc)
+    if "429" in msg or "quota" in msg.lower() or "rate" in msg.lower():
+        retry_match = re.search(r'retry.*?(\d+)\s*s', msg, re.IGNORECASE)
+        retry_info = f" Intenta de nuevo en {retry_match.group(1)} segundos." if retry_match else ""
+        return (
+            "**Límite de API alcanzado.**\n\n"
+            "La cuota gratuita de Gemini para esta sesión se ha agotado. "
+            "Esto es un límite del proveedor de IA (Google), no un error de la aplicación.\n\n"
+            "**¿Qué hacer?**\n"
+            "- Espera unos minutos y vuelve a intentarlo.\n"
+            "- O actualiza tu plan en [Google AI Studio](https://aistudio.google.com)."
+            + (f"\n\n_{retry_info.strip()}_" if retry_info else "")
+        )
+    if "leaked" in msg.lower() or ("403" in msg and "api key" in msg.lower()):
+        return (
+            "**API Key bloqueada por Google.**\n\n"
+            "La clave de Gemini fue reportada como filtrada y Google la ha desactivado. "
+            "La IA no funcionará hasta que se reemplace.\n\n"
+            "**Solución:**\n"
+            "1. Ve a [aistudio.google.com](https://aistudio.google.com) → **Get API key** → crea una nueva clave.\n"
+            "2. Abre el archivo `.streamlit/secrets.toml` en el proyecto.\n"
+            "3. Reemplaza el valor de `GEMINI_API_KEY` con la nueva clave.\n"
+            "4. Reinicia la aplicación."
+        )
+    if "403" in msg or "permission" in msg.lower() or "unauthorized" in msg.lower():
+        return (
+            "**Sin autorización con la API de Gemini.**\n\n"
+            "La clave de API no tiene permisos para usar este modelo. "
+            "Verifica que la `GEMINI_API_KEY` en `.streamlit/secrets.toml` sea válida."
+        )
+    if any(k in msg.lower() for k in ("connection", "timeout", "network", "ssl")):
+        return (
+            "**Sin conexión con la IA.**\n\n"
+            "No se pudo comunicar con el servidor de Gemini. "
+            "Verifica tu conexión a internet e inténtalo de nuevo."
+        )
+    # Error genérico — mostrar solo la primera línea, no el JSON completo
+    first_line = msg.split("\n")[0][:200]
+    return f"**Error de IA:** {first_line}"
 
 def leer_reglas_prime(dominio: str) -> Optional[str]:
     """Lee las reglas guardadas previamente para un dominio."""
@@ -23,8 +70,6 @@ def leer_reglas_prime(dominio: str) -> Optional[str]:
     return None
 
 def guardar_reglas_prime(nuevas_reglas, dominio):
-    import json
-    import os
     try:
         # 1. BLINDAJE: Verificamos si ya es un diccionario o si hay que convertirlo
         if isinstance(nuevas_reglas, dict):
@@ -132,7 +177,8 @@ def generar_reglas_autonomas_ia(datos_crudos: pd.DataFrame, dominio: str) -> str
 """
     
     try:
-        modelo = genai.GenerativeModel('gemini-flash-latest')
+        configurar_api_ia()  # Releer la clave desde secrets.toml en cada llamada
+        modelo = genai.GenerativeModel(obtener_modelo_agente())
         respuesta = modelo.generate_content(prompt)
         
         # Limpieza quirúrgica de markdown si la IA lo incluye por error
@@ -143,10 +189,7 @@ def generar_reglas_autonomas_ia(datos_crudos: pd.DataFrame, dominio: str) -> str
             
         return texto_limpio
     except Exception as e:
-        import traceback
-        error_completo = traceback.format_exc()
-        # En lugar de devolver {}, devolvemos el error como texto
-        return f"ERROR FATAL INTERNO:\n{error_completo}"    
+        return _manejar_error_ia(e)
 
 def responder_chat_ia(mensaje_usuario: str, df_contexto: pd.DataFrame, filtro_str: str, historial_ui: list) -> str:
     """
@@ -171,9 +214,10 @@ def responder_chat_ia(mensaje_usuario: str, df_contexto: pd.DataFrame, filtro_st
     """
     
     try:
-        modelo = genai.GenerativeModel('gemini-flash-latest')
+        configurar_api_ia()  # Releer la clave desde secrets.toml en cada llamada
+        modelo = genai.GenerativeModel(obtener_modelo_agente())
         chat = modelo.start_chat(history=history_gemini)
         response = chat.send_message(f"{prompt_sistema}\n\nPregunta del usuario: {mensaje_usuario}")
         return response.text
     except Exception as e:
-        return f"Lo siento, tuve un problema de conexión: {e}"
+        return _manejar_error_ia(e)

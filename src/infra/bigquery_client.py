@@ -1,36 +1,3 @@
-"""
-import streamlit as st
-import polars as pl
-import os
-from google.oauth2 import service_account
-from google.cloud import bigquery
-
-def extraer_maestro_materiales():
-    try:
-        # 1. Ruta al archivo JSON (asumiendo que está en la raíz del proyecto)
-        ruta_credenciales = "credenciales_gcp.json"
-        
-        # Validamos que el archivo realmente esté ahí para evitar errores raros
-        if not os.path.exists(ruta_credenciales):
-            raise FileNotFoundError(f"No se encontró el archivo {ruta_credenciales} en la raíz del proyecto.")
-
-        # 2. Google lee el JSON y crea las credenciales automáticamente (¡Sin pelear con saltos de línea!)
-        credentials = service_account.Credentials.from_service_account_file(ruta_credenciales)
-        
-        # 3. Nos conectamos usando el project_id que viene dentro del mismo JSON
-        client = bigquery.Client(credentials=credentials, project=credentials.project_id)
-
-        # 4. Ejecutamos la consulta
-        query = "SELECT * FROM `brinsa-it-data-lake.SC_TALON.VW_MAESTRO_MATERIALES`"
-        query_job = client.query(query)
-        
-        # 5. Retornamos los datos en Polars
-        return pl.from_arrow(query_job.result().to_arrow())
-
-    except Exception as e:
-        raise Exception(f"Fallo en la conexión o consulta a BigQuery: {str(e)}")
-    
-"""
 import streamlit as st
 import polars as pl
 import pandas as pd
@@ -50,33 +17,57 @@ def _obtener_cliente_bq():
 
 def extraer_materiales_pendientes() -> pl.DataFrame:
     """
-    Carga Incremental (Delta): Busca en la vista maestra solo los materiales que 
-    aún NO han sido insertados en la tabla de auditoría (Materiales_TALONBD).
+    Carga Incremental — Caso A: SKUs que aún NO existen en Materiales_TALONBD.
+    Si la tabla destino está vacía trae el universo completo (~20 000 registros).
+    En el día a día solo devuelve los SKUs verdaderamente nuevos.
     """
     try:
         client = _obtener_cliente_bq()
 
-        # Usamos LEFT JOIN para traer solo lo que no está en TALONBD.
-        # Si la tabla destino está vacía, traerá los ~20,000 registros iniciales.
-        # En el día a día, traerá solo los nuevos.
-        # Usamos LEFT JOIN para traer solo lo que no está en TALONBD.
-        # Usamos LEFT JOIN y forzamos ambos campos a STRING con CAST para evitar errores de tipo
         query = """
-            SELECT origen.* FROM `brinsa-it-data-lake.SC_TALON.VW_MAESTRO_MATERIALES` AS origen
+            SELECT origen.*
+            FROM `brinsa-it-data-lake.SC_TALON.VW_MAESTRO_MATERIALES` AS origen
             LEFT JOIN `brinsa-it-data-lake.SC_TALON.Materiales_TALONBD` AS destino
-              ON CAST(origen.SKU AS STRING) = CAST(destino.SKU AS STRING)
+                ON CAST(origen.SKU AS STRING) = CAST(destino.SKU AS STRING)
             WHERE destino.SKU IS NULL
         """
-        # Nota: Si más adelante quieres validar también por fecha de modificación, 
-        # puedes añadir: OR origen.fecha_actualiza > destino.Fecha_Actualizacion
 
         query_job = client.query(query)
         df_resultado = pl.from_arrow(query_job.result().to_arrow())
-        
         return df_resultado
 
     except Exception as e:
-        raise Exception(f"Fallo en la extracción incremental: {str(e)}")
+        raise Exception(f"Fallo en la extracción incremental (Caso A): {str(e)}")
+
+
+def actualizar_fechas_materiales() -> int:
+    """
+    Actualización Incremental — Caso B: SKUs que ya existen en Materiales_TALONBD
+    pero cuya fecha_actualiza en la vista maestra difiere de Fecha_Actualizacion
+    en la tabla de auditoría.
+
+    Ejecuta un UPDATE DML en BigQuery y devuelve el número de filas afectadas.
+    """
+    try:
+        client = _obtener_cliente_bq()
+
+        query_update = """
+            UPDATE `brinsa-it-data-lake.SC_TALON.Materiales_TALONBD` AS destino
+            SET destino.Fecha_Actualizacion = origen.fecha_actualiza, 
+            destino.Fecha_Ingreso = origen.fecha_creacion,  -- Se agrega esta línea
+            destino.Fecha_Actualizacion_M = CURRENT_TIMESTAMP()
+            FROM `brinsa-it-data-lake.SC_TALON.VW_MAESTRO_MATERIALES` AS origen
+            WHERE CAST(destino.SKU AS STRING) = CAST(origen.SKU AS STRING)
+              AND IFNULL(CAST(origen.fecha_actualiza AS STRING),      '1900-01-01')
+               != IFNULL(CAST(destino.Fecha_Actualizacion AS STRING), '1900-01-01')
+        """
+
+        job = client.query(query_update)
+        job.result()
+        return job.num_dml_affected_rows or 0
+
+    except Exception as e:
+        raise Exception(f"Fallo al actualizar fechas en Materiales_TALONBD: {str(e)}")
 
 
 def cargar_resultados_auditoria(df_resultados) -> int:
@@ -119,17 +110,23 @@ def cargar_resultados_auditoria(df_resultados) -> int:
     
 def extraer_anomalias_pendientes() -> pl.DataFrame:
     """
-    Trae los datos crudos de SAP, pero SOLO de los SKUs que ya están 
-    marcados como "Malos" (Estado_Gestion = 0) en la base de datos.
-    Esto alimenta la interfaz de forma ultrarrápida.
+    Trae los datos crudos de SAP solo de los SKUs marcados como
+    "Malos" (Estado_Gestion = 0) en la tabla de auditoría.
+
+    Usa EXISTS en lugar de INNER JOIN para evitar registros duplicados
+    cuando un mismo SKU tiene múltiples entradas en Materiales_TALONBD.
     """
     try:
         client = _obtener_cliente_bq()
         query = """
-            SELECT origen.* FROM `brinsa-it-data-lake.SC_TALON.VW_MAESTRO_MATERIALES` AS origen
-            INNER JOIN `brinsa-it-data-lake.SC_TALON.Materiales_TALONBD` AS destino
-              ON CAST(origen.SKU AS STRING) = CAST(destino.SKU AS STRING)
-            WHERE destino.Estado_Gestion = 0
+            SELECT origen.*
+            FROM `brinsa-it-data-lake.SC_TALON.VW_MAESTRO_MATERIALES` AS origen
+            WHERE EXISTS (
+                SELECT 1
+                FROM `brinsa-it-data-lake.SC_TALON.Materiales_TALONBD` AS destino
+                WHERE CAST(origen.SKU AS STRING) = CAST(destino.SKU AS STRING)
+                  AND destino.Estado_Gestion = 0
+            )
         """
         query_job = client.query(query)
         df_resultado = pl.from_arrow(query_job.result().to_arrow())

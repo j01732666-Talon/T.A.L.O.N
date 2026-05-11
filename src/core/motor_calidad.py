@@ -52,9 +52,6 @@ def cargar_reglas_json() -> dict:
 
 def adaptar_reglas_ia_a_motor(json_ia_str, dominio):
     try:
-        import json
-        import re
-        
         # 1. Blindaje: Convertir a diccionario de forma segura
         if isinstance(json_ia_str, dict):
             datos_ia = json_ia_str
@@ -375,9 +372,6 @@ def ejecutar_auditoria_completa(datos_entrada, unidades, focos, dominio="Maestro
         }
 
     return pdf, resumen
-
-import pandas as pd
-import io
 
 def generar_excel_saneamiento_memoria(df: pd.DataFrame) -> bytes:
     """Genera el Excel con los errores separados en columnas individuales marcadas con X."""

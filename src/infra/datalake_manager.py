@@ -43,12 +43,9 @@ def inicializar_datalake():
 def obtener_historial_metricas() -> pd.DataFrame:
     """
     Consulta y recupera el registro histórico de todas las auditorías realizadas.
-    
-    Utiliza una conexión segura de solo lectura ('read_only=True') mediante un 
-    administrador de contexto ('with') para garantizar la liberación de la base de datos.
-    
+
     Returns:
-        pd.DataFrame: Un dataframe con el historial de métricas, ordenado por fecha descendente.
+        pd.DataFrame: Dataframe con el historial de métricas, ordenado por fecha descendente.
     """
     with duckdb.connect(DB_PATH, read_only=True) as con:
         df_hist = con.execute("SELECT * FROM historial_auditorias ORDER BY fecha DESC").df()
@@ -81,38 +78,22 @@ def guardar_auditoria(df_detalle: pd.DataFrame, usuario: str, dominio: str, res_
     # Preparar datos para DuckDB
     materiales_str = ", ".join(materiales) if materiales else "Todos"
     
-    con = duckdb.connect(DB_PATH)
-    con.execute("""
-        INSERT INTO historial_auditorias 
-        VALUES (?, current_timestamp, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        id_ejecucion, 
-        usuario, 
-        dominio, 
-        materiales_str, 
-        len(df_detalle),
-        res_dinamico['score_global'], 
-        res_dinamico['completitud'],
-        res_dinamico['validez'], 
-        res_dinamico['unicidad'], 
-        res_dinamico['consistencia'],
-        ruta_archivo_parquet
-    ))
-    con.close()
-    
-    return id_ejecucion
+    with duckdb.connect(DB_PATH) as con:
+        con.execute("""
+            INSERT INTO historial_auditorias
+            VALUES (?, current_timestamp, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            id_ejecucion,
+            usuario,
+            dominio,
+            materiales_str,
+            len(df_detalle),
+            res_dinamico['score_global'],
+            res_dinamico['completitud'],
+            res_dinamico['validez'],
+            res_dinamico['unicidad'],
+            res_dinamico['consistencia'],
+            ruta_archivo_parquet,
+        ))
 
-def obtener_historial_metricas() -> pd.DataFrame:
-    """
-    Consulta la base de datos DuckDB y retorna el histórico general de ejecuciones.
-    
-    Abre una conexión estándar a la base de datos, extrae todos los registros de 
-    auditoría ordenados del más reciente al más antiguo, y cierra la conexión explícitamente.
-    
-    Returns:
-        pd.DataFrame: Dataframe con el registro histórico de las auditorías.
-    """
-    con = duckdb.connect(DB_PATH)
-    df_hist = con.execute("SELECT * FROM historial_auditorias ORDER BY fecha DESC").df()
-    con.close()
-    return df_hist
+    return id_ejecucion

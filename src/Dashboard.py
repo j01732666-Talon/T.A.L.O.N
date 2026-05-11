@@ -1,71 +1,152 @@
 import streamlit as st
-# --- 1. CANDADO DE SEGURIDAD ---
+
+# --- CANDADO DE SEGURIDAD ---
 if not st.session_state.get("connected"):
-    st.warning("⛔ Acceso denegado. Por favor inicia sesión primero.")
+    st.warning("Acceso denegado. Por favor inicia sesión primero.")
     st.switch_page("app.py")
     st.stop()
 
-# --- 2. CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Dashboard | TALON", layout="wide")
-
-# 🔥 EL TRUCO MAGICO: Ocultar el menú lateral de páginas de Streamlit
-st.markdown(
-    """
-    <style>
-        /* Oculta la navegación automática de páginas */
-        [data-testid="stSidebarNav"] {display: none !important;}
-        
-        /* Opcional: Si quieres ocultar el sidebar COMPLETO (incluso el espacio gris) descomenta la línea de abajo */
-        /* [data-testid="stSidebar"] {display: none !important;} */
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 import pandas as pd
 import polars as pl
 import time
 import threading
 
-# Importaciones locales de tu proyecto
+try:
+    from streamlit.runtime.scriptrunner import add_script_run_ctx
+except ImportError:
+    from streamlit.scriptrunner import add_script_run_ctx
+
 from config import DOMINIOS_CONFIG, UNIDADES_REF, CUSTODIOS, NOMBRES_MATERIALES
 from core.motor_calidad import adaptar_reglas_ia_a_motor, ejecutar_auditoria_completa, generar_excel_saneamiento_memoria
 from core.motor_ia import responder_chat_ia, generar_reglas_autonomas_ia, guardar_reglas_prime
 from ui.ui_components import (renderizar_metricas, renderizar_grafico_dimensiones,
-                               renderizar_tabla_hallazgos, renderizar_grafico_top_errores,
-                               renderizar_grafico_por_foco)
+                               renderizar_tabla_hallazgos, renderizar_tabla_top_errores,
+                               renderizar_grafico_por_foco, mostrar_placeholder_grafica)
+from ui.theme import inject_global_css
 from infra.datalake_manager import inicializar_datalake, guardar_auditoria, obtener_historial_metricas
 from infra.auth_manager import inicializar_tabla_usuarios
-from infra.bigquery_client import extraer_materiales_pendientes, cargar_resultados_auditoria, extraer_anomalias_pendientes
+from infra.bigquery_client import (extraer_materiales_pendientes, cargar_resultados_auditoria,
+                                    extraer_anomalias_pendientes, actualizar_fechas_materiales)
+
 
 def mostrar_panel_principal():
-    # 🚀 EL PUENTE: Sincronizamos los datos de Google con las variables de Talon
-    user_info = st.session_state.get('user_info', {})
+    user_info      = st.session_state.get('user_info', {})
     st.session_state['usuario_actual'] = user_info.get('email', 'Usuario SSO')
     nombre_usuario = user_info.get('name', 'Auditor')
 
-    # --- FUNCIONES INTERNAS ---
+    # ── AJUSTES DE USUARIO (idioma) ────────────────────────────────
+    if 'idioma' not in st.session_state:
+        st.session_state['idioma'] = 'es'
+
+    _T = {
+        'es': {
+            'config':       'Configuración',
+            'dominio':      'Dominio de datos',
+            'fuente':       'Fuente de datos',
+            'directa':      'Conexión Directa (TalonDB)',
+            'local':        'Archivo Local (.xlsx)',
+            'panel_titulo': '☁ TalonDB — Panel de Gobierno',
+            'panel_desc':   'Detecta registros nuevos en SAP, los audita\ny carga el tablero de anomalías pendientes.',
+            'btn_sync':     '⟳  Sincronizar y Cargar Tablero',
+            'btn_sync_help':'Busca registros nuevos en SAP, los audita en segundo plano y carga las anomalías pendientes.',
+            'ultima_sync':  'Última sync',
+            'iniciando':    'Iniciando tablero — conectando con TalonDB…',
+            'autoperfilar': 'Autoperfilar con IA',
+            'cargar':       'Cargar extracción',
+            'enfoque':      'Enfoque',
+            'filtro_cat':   'Filtrar Categoría',
+            'todo':         'Analizar todo',
+            'reglas_title': 'Reglas activas de Talon',
+            'cerrar':       'Cerrar Sesión',
+            'paso1':            'Paso 1/2 — Buscando registros nuevos en SAP…',
+            'paso2':            'Paso 2/2 — Cargando anomalías pendientes desde BigQuery…',
+            'tab_explorer':     'Explorador',
+            'tab_dashboard':    'Dashboard',
+            'tab_ia':           'Asistente IA',
+            'tab_historial':    'Historial',
+            'exportar':         '⬇  Exportar Saneamiento (.xlsx)',
+            'notificar':        'Notificar Custodio',
+            'enviar_reporte':   'Enviar reporte',
+            'correo_resp':      'Correo del responsable',
+            'enviar_excel':     'Enviar Excel',
+            'sin_reglas':       'Sin reglas de IA cargadas — ejecuta <b>Autoperfilar con IA</b> para activar los scores completos.',
+            'guardar_prime':    'Guardar como Reglas Prime',
+            'registros_lbl':    'registros',
+            'chat_label':       'Chat · Consultor Talon IA',
+            'chat_bienvenida':  '**Hola, soy Talon.**\n\nAnalicé **{n:,}** registros y detecté un score global de **{s:.1f}%**.\n\n¿Por dónde comenzamos? Puedo explicar las anomalías o ayudarte a ajustar las reglas de validación.',
+            'chat_input':       'Pregúntale a Talon sobre las anomalías…',
+            'sin_anomalias_ok': '¡Felicidades! No se encontraron anomalías pendientes.',
+            'auditorias_reg':   'Auditorías registradas',
+            'sin_auditorias':   'Aún no hay auditorías registradas.',
+            'conectando_auto':  '⟳ &nbsp;Conectando con TalonDB — los datos aparecerán automáticamente…',
+            'cargando_auto':    '⟳ &nbsp;Cargando datos desde TalonDB…',
+            'sin_datos_exp':    'El explorador de anomalías aparecerá aquí una vez se carguen los datos.',
+            'sin_datos_ia':     'El asistente IA estará disponible tras cargar los datos.',
+        },
+        'en': {
+            'config':       'Configuration',
+            'dominio':      'Data domain',
+            'fuente':       'Data source',
+            'directa':      'Direct Connection (TalonDB)',
+            'local':        'Local File (.xlsx)',
+            'panel_titulo': '☁ TalonDB — Control Panel',
+            'panel_desc':   'Detects new SAP records, audits them\nand loads the anomaly dashboard.',
+            'btn_sync':     '⟳  Sync and Load Dashboard',
+            'btn_sync_help':'Finds new SAP records, audits them in background and loads the anomaly dashboard.',
+            'ultima_sync':  'Last sync',
+            'iniciando':    'Starting dashboard — connecting to TalonDB…',
+            'autoperfilar': 'AI Auto-profile',
+            'cargar':       'Load extract',
+            'enfoque':      'Focus',
+            'filtro_cat':   'Filter Category',
+            'todo':         'Analyze all',
+            'reglas_title': 'Active Talon Rules',
+            'cerrar':       'Sign Out',
+            'paso1':            'Step 1/2 — Searching for new SAP records…',
+            'paso2':            'Step 2/2 — Loading pending anomalies from BigQuery…',
+            'tab_explorer':     'Explorer',
+            'tab_dashboard':    'Dashboard',
+            'tab_ia':           'AI Assistant',
+            'tab_historial':    'History',
+            'exportar':         '⬇  Export Remediation (.xlsx)',
+            'notificar':        'Notify Custodian',
+            'enviar_reporte':   'Send report',
+            'correo_resp':      'Responsible email',
+            'enviar_excel':     'Send Excel',
+            'sin_reglas':       'No AI rules loaded — run <b>AI Auto-profile</b> to enable full scoring.',
+            'guardar_prime':    'Save as Prime Rules',
+            'registros_lbl':    'records',
+            'chat_label':       'Chat · Talon AI Consultant',
+            'chat_bienvenida':  '**Hello, I\'m Talon.**\n\nI analyzed **{n:,}** records and detected a global score of **{s:.1f}%**.\n\nWhere shall we start? I can explain anomalies or help you adjust validation rules.',
+            'chat_input':       'Ask Talon about the anomalies…',
+            'sin_anomalias_ok': 'Congratulations! No pending anomalies were found.',
+            'auditorias_reg':   'Registered audits',
+            'sin_auditorias':   'No audits registered yet.',
+            'conectando_auto':  '⟳ &nbsp;Connecting to TalonDB — data will appear automatically…',
+            'cargando_auto':    '⟳ &nbsp;Loading data from TalonDB…',
+            'sin_datos_exp':    'The anomaly explorer will appear here once data is loaded.',
+            'sin_datos_ia':     'The AI assistant will be available after loading data.',
+        },
+    }
+    L = _T[st.session_state['idioma']]
+
+    # ── FUNCIONES INTERNAS ──────────────────────────────────────────
     def ejecutar_auditoria_background(df_pendientes, dominio, reglas):
         try:
-            print("Empezando auditoría en segundo plano...")
             df_auditado, _ = ejecutar_auditoria_completa(
                 df_pendientes, UNIDADES_REF, None, dominio, reglas
             )
-            print("Auditoría terminada. Preparando para guardar en BigQuery...")
-            
-            if isinstance(df_auditado, pl.DataFrame):
-                df_pandas = df_auditado.to_pandas()
-            else:
-                df_pandas = df_auditado.copy()
-                
+            df_pandas = (
+                df_auditado.to_pandas()
+                if isinstance(df_auditado, pl.DataFrame)
+                else df_auditado.copy()
+            )
             st.session_state['datos_crudos_bd'] = df_pandas
-            st.session_state['origen_datos'] = "TalonDB (BigQuery)"
-
+            st.session_state['origen_datos']    = "TalonDB (BigQuery)"
             try:
-                filas_insertadas = cargar_resultados_auditoria(df_auditado)
-                print(f"ÉXITO: {filas_insertadas} registros guardados en BigQuery.")
+                cargar_resultados_auditoria(df_auditado)
             except Exception as e_bq:
                 print(f"ERROR AL GUARDAR EN BIGQUERY: {e_bq}")
-                
         except Exception as e:
             print(f"ERROR FATAL EN EL MOTOR: {e}")
 
@@ -76,128 +157,66 @@ def mostrar_panel_principal():
     inicializar_datalake()
     inicializar_tabla_usuarios()
 
-    # ═══════════════════════════════════════════════════════════════
-    #  SISTEMA DE DISEÑO GLOBAL — CSS
-    # ═══════════════════════════════════════════════════════════════
-    st.markdown(
-        """
-        <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    # ══════════════════════════════════════════════════════════════
+    #  CSS GLOBAL — Sistema de Diseño Enterprise Slate / Azure
+    # ══════════════════════════════════════════════════════════════
+    inject_global_css()
 
-        <style>
-        /* Base */
-        html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
-        .stApp { background-color: #0D1117; color: #E6EDF3; }
+    # ══════════════════════════════════════════════════════════════
+    #  SIDEBAR
+    # ══════════════════════════════════════════════════════════════
+    _text_color  = "#F1F5F9"
+    _sub_color   = "#94A3B8"
+    _email_color = "#475569"
 
-        /* Tipografía utilitaria */
-        .t-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-weight: 600; letter-spacing: 1.4px; text-transform: uppercase; color: #8B949E; }
-        .t-heading { font-family: 'IBM Plex Mono', monospace; font-size: 28px; font-weight: 700; color: #E6EDF3; letter-spacing: -0.5px; line-height: 1.2; }
-        .t-sub { font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; color: #8B949E; line-height: 1.5; }
-
-        /* Sidebar */
-        [data-testid="stSidebar"] { background-color: #0D1117 !important; border-right: 1px solid #21262D !important; }
-        [data-testid="stSidebar"] * { color: #C9D1D9 !important; }
-        [data-testid="stSidebar"] .stRadio label, [data-testid="stSidebar"] .stMultiSelect label { font-family: 'IBM Plex Sans', sans-serif !important; font-size: 13px !important; }
-        [data-testid="stSidebar"] hr { border-color: #21262D !important; }
-
-        /* Botones primarios */
-        div[data-testid="stForm"] button[kind="primaryFormSubmit"], button[data-testid="baseButton-primary"], .stButton > button[kind="primary"] { background-color: #2F81F7 !important; color: #FFFFFF !important; border: none !important; border-radius: 4px !important; font-family: 'IBM Plex Mono', monospace !important; font-size: 12px !important; font-weight: 600 !important; letter-spacing: 1px !important; padding: 10px 20px !important; transition: background-color .15s ease !important; }
-        div[data-testid="stForm"] button[kind="primaryFormSubmit"]:hover, button[data-testid="baseButton-primary"]:hover, .stButton > button[kind="primary"]:hover { background-color: #388BFD !important; }
-
-        /* Botones secundarios */
-        .stButton > button[kind="secondary"], .stButton > button { background-color: #161B22 !important; color: #C9D1D9 !important; border: 1px solid #30363D !important; border-radius: 4px !important; font-family: 'IBM Plex Mono', monospace !important; font-size: 11px !important; letter-spacing: .8px !important; transition: border-color .15s ease, color .15s ease !important; }
-        .stButton > button[kind="secondary"]:hover, .stButton > button:hover { border-color: #58A6FF !important; color: #58A6FF !important; }
-
-        /* Download button */
-        .stDownloadButton > button { background-color: #161B22 !important; color: #3FB950 !important; border: 1px solid #3FB950 !important; border-radius: 4px !important; font-family: 'IBM Plex Mono', monospace !important; font-size: 11px !important; letter-spacing: .8px !important; }
-        .stDownloadButton > button:hover { background-color: #3FB950 !important; color: #0D1117 !important; }
-
-        /* Inputs / Text */
-        .stTextInput input, .stTextArea textarea { background-color: #0D1117 !important; border: 1px solid #30363D !important; border-radius: 4px !important; color: #E6EDF3 !important; font-family: 'IBM Plex Sans', sans-serif !important; font-size: 13px !important; }
-        .stTextInput input:focus, .stTextArea textarea:focus { border-color: #2F81F7 !important; box-shadow: none !important; }
-        .stTextInput label, .stTextArea label, .stSelectbox label, .stMultiSelect label, .stFileUploader label { font-family: 'IBM Plex Mono', monospace !important; font-size: 11px !important; font-weight: 600 !important; letter-spacing: 1px !important; color: #8B949E !important; text-transform: uppercase !important; }
-
-        /* Tabs */
-        .stTabs [data-baseweb="tab-list"] { background-color: transparent !important; border-bottom: 1px solid #21262D !important; gap: 0px !important; }
-        .stTabs [data-baseweb="tab"] { background-color: transparent !important; color: #8B949E !important; border: none !important; border-bottom: 2px solid transparent !important; padding: 10px 20px !important; font-family: 'IBM Plex Mono', monospace !important; font-size: 11px !important; font-weight: 600 !important; letter-spacing: .8px !important; text-transform: uppercase !important; transition: color .15s ease, border-color .15s ease !important; }
-        .stTabs [aria-selected="true"] { color: #E6EDF3 !important; border-bottom: 2px solid #2F81F7 !important; }
-        .stTabs [data-baseweb="tab"]:hover { color: #C9D1D9 !important; }
-        .stTabs [data-baseweb="tab-panel"] { padding-top: 24px !important; background-color: transparent !important; }
-
-        /* Dataframe / Tabla */
-        [data-testid="stDataFrame"] { border: 1px solid #21262D !important; border-radius: 6px !important; overflow: hidden !important; }
-
-        /* Alertas / mensajes */
-        .stAlert { border-radius: 4px !important; font-family: 'IBM Plex Sans', sans-serif !important; font-size: 13px !important; }
-        [data-testid="stNotification"] { background-color: #161B22 !important; border: 1px solid #21262D !important; border-radius: 4px !important; }
-
-        /* Expander sidebar */
-        [data-testid="stExpander"] { background-color: #0D1117 !important; border: 1px solid #21262D !important; border-radius: 4px !important; }
-
-        /* Spinner */
-        .stSpinner > div > div { border-top-color: #2F81F7 !important; }
-
-        /* Cards utilitarias */
-        .talon-card { background: #161B22; border: 1px solid #30363D; border-radius: 6px; padding: 28px 32px; }
-        .talon-card-accent { background: #161B22; border: 1px solid #30363D; border-left: 3px solid #2F81F7; border-radius: 6px; padding: 14px 18px; }
-
-        /* Chat */
-        [data-testid="stChatMessageContent"] { background-color: #161B22 !important; border: 1px solid #21262D !important; border-radius: 6px !important; font-family: 'IBM Plex Sans', sans-serif !important; font-size: 13px !important; }
-        .stChatInput textarea { background-color: #161B22 !important; border: 1px solid #30363D !important; border-radius: 4px !important; color: #E6EDF3 !important; }
-
-        /* File uploader */
-        [data-testid="stFileUploader"] { background-color: #0D1117 !important; border: 1px dashed #30363D !important; border-radius: 6px !important; }
-
-        /* Popover */
-        [data-testid="stPopover"] { background-color: #161B22 !important; border: 1px solid #30363D !important; border-radius: 6px !important; }
-
-        /* Multiselect tags */
-        [data-baseweb="tag"] { background-color: #21262D !important; color: #C9D1D9 !important; border-radius: 3px !important; font-family: 'IBM Plex Mono', monospace !important; font-size: 11px !important; }
-
-        /* Quita padding excesivo del main */
-        .block-container { padding-top: 28px !important; padding-bottom: 40px !important; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # ═══════════════════════════════════════════════════════════════
-    #  ÁREA DE INTERFAZ DE USUARIO
-    # ═══════════════════════════════════════════════════════════════
     with st.sidebar:
-        # Marca / usuario
+        # ── Encabezado usuario ────────────────────────────────────
         st.markdown(
             f"""
-            <div style="padding:16px 0 12px;">
-              <p style="font-family:'IBM Plex Mono',monospace;font-size:200x;
-                font-weight:700;letter-spacing:2px;color:#E6EDF3;margin:0;">
-                T.A.L.O.N
-              </p>
+            <div style="padding:4px 0 6px;">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+                <div style="width:6px;height:6px;border-radius:50%;background:#3B82F6;
+                            box-shadow:0 0 6px rgba(59,130,246,0.7);
+                            animation:pulse 2.4s ease-in-out infinite;flex-shrink:0;"></div>
+                <p style="font-family:'IBM Plex Mono',monospace;font-size:15px;
+                  font-weight:700;letter-spacing:2px;color:{_text_color};margin:0;">
+                  T.A.L.O.N
+                </p>
+              </div>
               <p style="font-family:'IBM Plex Sans',sans-serif;font-size:11px;
-                color:#484F58;margin:4px 0 0;">
-                {nombre_usuario} <br>
-                <span style="font-size: 9px;">{st.session_state['usuario_actual']}</span>
+                color:{_sub_color};margin:0 0 2px 16px;line-height:1.5;">
+                {nombre_usuario}
+              </p>
+              <p style="font-family:'IBM Plex Mono',monospace;font-size:10px;
+                color:{_email_color};margin:0 0 0 16px;letter-spacing:.3px;">
+                {st.session_state['usuario_actual']}
               </p>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
         st.divider()
 
-        st.markdown("<p class='t-label'>Configuración</p>", unsafe_allow_html=True)
-        opciones_dominio = list(DOMINIOS_CONFIG.keys()) if DOMINIOS_CONFIG else ["Maestro de Materiales", "Directorio Comercial"]
-        dominio_seleccionado = st.radio("Dominio de datos", opciones_dominio, label_visibility="collapsed")
+        st.markdown(f"<p class='t-label'>{L['config']}</p>", unsafe_allow_html=True)
+        opciones_dominio  = list(DOMINIOS_CONFIG.keys()) if DOMINIOS_CONFIG else ["Maestro de Materiales", "Directorio Comercial"]
+        dominio_seleccionado = st.radio(L['dominio'], opciones_dominio, label_visibility="collapsed")
 
-        st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
-        fuente_datos = st.radio("Fuente de datos", ("Archivo Local (.xlsx)", "Conexión Directa (TalonDB)"), label_visibility="collapsed")
+        st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
+        fuente_datos = st.radio(
+            L['fuente'],
+            (L['directa'], L['local']),
+            label_visibility="collapsed",
+        )
         st.divider()
 
-    # ── Carga de datos ───────────────────────────────────────
+    # ── CARGA DE DATOS ─────────────────────────────────────────────
     archivo_subido = None
     datos_crudos   = None
 
     with st.sidebar:
-        if fuente_datos == "Archivo Local (.xlsx)":
-            archivo_subido = st.file_uploader("Cargar extracción", type=["xlsx"])
+        if fuente_datos == L['local']:
+            archivo_subido = st.file_uploader(L['cargar'], type=["xlsx"])
             if archivo_subido:
                 archivo_subido.seek(0)
                 hoja = "DATA" if dominio_seleccionado and "Directorio" in dominio_seleccionado else 0
@@ -206,235 +225,438 @@ def mostrar_panel_principal():
                 except ValueError:
                     datos_crudos = pd.read_excel(archivo_subido, sheet_name=0)
                 st.session_state['origen_datos'] = archivo_subido.name
+
         else:
-            st.markdown("<p style='font-size:11px;color:#8B949E;font-family:\"IBM Plex Sans\",sans-serif;'>☁ Panel de Gobierno (TalonDB)</p>", unsafe_allow_html=True)
-            
-            if st.button("1. Buscar Nuevos (Sincronizar)", type="secondary", use_container_width=True):
-                with st.spinner("Buscando registros nuevos..."):
+            # ── BOTÓN ÚNICO: SINCRONIZAR + CARGAR ────────────────
+            st.markdown(
+                f"""
+                <p class='t-label' style='margin-bottom:8px;'>{L['panel_titulo']}</p>
+                <p style='font-size:11px;color:#484F58;font-family:"IBM Plex Sans",sans-serif;
+                   margin-bottom:12px;line-height:1.5;'>
+                  {L['panel_desc'].replace(chr(10), '<br>')}
+                </p>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # ── CARGA AUTOMÁTICA AL INICIO DE SESIÓN ─────────────
+            if (
+                'datos_crudos_bd' not in st.session_state
+                and not st.session_state.get('_auto_carga_intento')
+            ):
+                st.session_state['_auto_carga_intento'] = True
+                with st.spinner(L['iniciando']):
+                    try:
+                        df_malos_auto = extraer_anomalias_pendientes()
+                        if df_malos_auto is not None and len(df_malos_auto) > 0:
+                            st.session_state['datos_crudos_bd'] = df_malos_auto.to_pandas()
+                            st.session_state['origen_datos']    = "TalonDB (Pendientes)"
+                            st.session_state['ultima_sync']     = time.strftime("%H:%M")
+                            st.rerun()
+                        else:
+                            st.session_state['ultima_sync'] = time.strftime("%H:%M")
+                    except Exception as e_auto:
+                        st.caption(f"⚠ Auto-carga: {str(e_auto)[:80]}")
+
+            # Estado de la última sincronización
+            ultima_sync = st.session_state.get('ultima_sync', None)
+            if ultima_sync:
+                st.markdown(
+                    f"<div class='sync-status'><div class='sync-dot'></div>"
+                    f"{L['ultima_sync']}: {ultima_sync}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown("<div class='btn-sync'>", unsafe_allow_html=True)
+            btn_sync = st.button(
+                L['btn_sync'],
+                type="primary",
+                width='stretch',
+                help=L['btn_sync_help'],
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            if btn_sync:
+                with st.spinner(L['paso1']):
+                    # Caso A: SKUs nuevos → auditar e insertar
                     df_pendientes = extraer_materiales_pendientes()
                     if df_pendientes is not None and len(df_pendientes) > 0:
-                        st.info(f"Se procesarán {len(df_pendientes)} registros nuevos en segundo plano.")
                         reglas_activas = st.session_state.get('reglas_ia_dinamicas')
                         hilo = threading.Thread(
                             target=ejecutar_auditoria_background,
-                            args=(df_pendientes, dominio_seleccionado, reglas_activas)
+                            args=(df_pendientes, dominio_seleccionado, reglas_activas),
                         )
+                        add_script_run_ctx(hilo)
                         hilo.start()
+                        st.toast(f"✓ {len(df_pendientes)} registros nuevos enviados al motor de auditoría", icon="🔄")
                     else:
-                        st.success("Todo está al día. No hay registros nuevos en SAP.")
+                        st.toast("Todo al día — sin registros nuevos en SAP", icon="✅")
 
-            st.write("") 
+                    # Caso B: SKUs existentes con fecha_actualiza cambiada → UPDATE
+                    try:
+                        filas_actualizadas = actualizar_fechas_materiales()
+                        if filas_actualizadas > 0:
+                            st.toast(f"↻ {filas_actualizadas} registros actualizados por cambio de fecha", icon="🔁")
+                    except Exception as e_upd:
+                        st.toast(f"Aviso: no se pudo actualizar fechas — {e_upd}", icon="⚠️")
 
-            if st.button("2. Cargar Tablero de Trabajo", type="primary", use_container_width=True):
-                with st.spinner("Cargando anomalías desde BigQuery..."):
+                with st.spinner(L['paso2']):
                     try:
                         df_malos = extraer_anomalias_pendientes()
                         if df_malos is not None and len(df_malos) > 0:
                             st.session_state['datos_crudos_bd'] = df_malos.to_pandas()
-                            st.session_state['origen_datos'] = "TalonDB (Pendientes)"
-                            st.success(f"Se cargaron {len(df_malos)} registros para corregir.")
-                            st.rerun() 
+                            st.session_state['origen_datos']    = "TalonDB (Pendientes)"
+                            st.session_state['ultima_sync']     = time.strftime("%H:%M")
+                            st.success(f"✓ {len(df_malos):,} registros cargados para gestión.")
+                            st.rerun()
                         else:
-                            st.success("¡Felicidades! No tienes ninguna anomalía pendiente por gestionar.")
+                            st.session_state['ultima_sync'] = time.strftime("%H:%M")
+                            st.success("¡Sin anomalías pendientes! El maestro está limpio.")
                     except Exception as e:
-                        st.error(f"Error cargando el tablero: {str(e)}")
-        
+                        st.error(f"Error al cargar el tablero: {str(e)}")
+
         if 'datos_crudos_bd' in st.session_state:
             datos_crudos = st.session_state['datos_crudos_bd']
 
-    # ── Botón IA ─────────────────────────────────────────────
+    # ── BOTÓN IA ────────────────────────────────────────────────────
     with st.sidebar:
         if datos_crudos is not None:
             st.divider()
-            if st.button("Autoperfilar con IA", use_container_width=True):
-                with st.spinner("Analizando con Gemini..."):
-                    texto_ia = generar_reglas_autonomas_ia(datos_crudos, dominio_seleccionado)
-                    reglas_adaptadas = adaptar_reglas_ia_a_motor(texto_ia, dominio_seleccionado)
-                    if reglas_adaptadas:
-                        st.session_state['reglas_ia_dinamicas'] = reglas_adaptadas
+            if st.button(L['autoperfilar'], width='stretch'):
+                with st.spinner("Analizando con Gemini…"):
+                    texto_ia       = generar_reglas_autonomas_ia(datos_crudos, dominio_seleccionado)
+                    reglas_adapt   = adaptar_reglas_ia_a_motor(texto_ia, dominio_seleccionado)
+                    if reglas_adapt:
+                        st.session_state['reglas_ia_dinamicas'] = reglas_adapt
                         st.success("Perfilamiento completado.")
                     else:
                         st.error("El traductor rechazó el formato de la IA.")
                     st.rerun()
 
-    # ── Reglas IA en sidebar ─────────────────────────────────
+    # ── REGLAS IA ACTIVAS ────────────────────────────────────────────
     with st.sidebar:
         if st.session_state.get('reglas_ia_dinamicas'):
             st.divider()
-            st.markdown("<p class='t-label'>Reglas activas de Talon</p>", unsafe_allow_html=True)
+            st.markdown(f"<p class='t-label'>{L['reglas_title']}</p>", unsafe_allow_html=True)
             reglas_ia = st.session_state['reglas_ia_dinamicas']
             for foco, contenido in reglas_ia.items():
-                nombre_menu = "Reglas Generales (SKUs)" if foco == "DEFAULT" and "Directorio" not in dominio_seleccionado else f"Reglas: {foco}"
+                nombre_menu = (
+                    "Reglas Generales (SKUs)"
+                    if foco == "DEFAULT" and "Directorio" not in dominio_seleccionado
+                    else f"Reglas: {foco}"
+                )
                 with st.expander(nombre_menu):
                     if isinstance(contenido, dict):
                         for dimension, reglas_dim in contenido.items():
-                            if dimension == "pesos_dimensiones":
+                            if dimension == "pesos_dimensiones" or not reglas_dim:
                                 continue
-                            if reglas_dim:
-                                st.markdown(f"<p style='font-family:\"IBM Plex Mono\",monospace;font-size:11px;font-weight:600;color:#8B949E;margin-bottom:4px;'>{dimension}</p>", unsafe_allow_html=True)
-                                for campo, config in reglas_dim.items():
-                                    msg  = config.get('mensaje', 'Validación estricta')
-                                    peso = config.get('penalizacion', 0)
-                                    st.markdown(f"<p style='font-size:11px;color:#C9D1D9;margin:2px 0;'><b>{campo}</b>: {msg} <span style='color:#F85149;'>−{peso} pts</span></p>", unsafe_allow_html=True)
+                            st.markdown(
+                                f"<p style='font-family:\"IBM Plex Mono\",monospace;font-size:11px;"
+                                f"font-weight:600;color:#3B82F6;margin-bottom:4px;letter-spacing:.6px;'>{dimension}</p>",
+                                unsafe_allow_html=True,
+                            )
+                            for campo, config in reglas_dim.items():
+                                msg  = config.get('mensaje', 'Validación estricta')
+                                peso = config.get('penalizacion', 0)
+                                st.markdown(
+                                    f"<p style='font-size:11px;color:#CBD5E1;margin:2px 0;'>"
+                                    f"<b>{campo}</b>: {msg} "
+                                    f"<span style='color:#60A5FA;font-family:IBM Plex Mono,monospace;'>−{peso} pts</span></p>",
+                                    unsafe_allow_html=True,
+                                )
 
-    # ── CUERPO PRINCIPAL (Con Datos) ─────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════
+    #  CUERPO PRINCIPAL — SIEMPRE visible (con o sin datos)
+    # ══════════════════════════════════════════════════════════════
     if datos_crudos is not None:
+        # ── Procesar datos ───────────────────────────────────────
         reglas_actuales = st.session_state.get('reglas_ia_dinamicas')
-        df_res, res_original = procesar_datos(datos_crudos, UNIDADES_REF, None, dominio_seleccionado, reglas_actuales)
+        df_res, res_original = procesar_datos(
+            datos_crudos, UNIDADES_REF, None, dominio_seleccionado, reglas_actuales
+        )
 
         materiales_presentes = []
         if 'tipo_mat' in df_res.columns:
-            materiales_presentes = sorted([m for m in df_res['tipo_mat'].unique().tolist() if pd.notna(m) and m in NOMBRES_MATERIALES])
+            materiales_presentes = sorted([
+                m for m in df_res['tipo_mat'].unique().tolist()
+                if pd.notna(m) and m in NOMBRES_MATERIALES
+            ])
 
         with st.sidebar:
             st.divider()
-            st.markdown("<p class='t-label'>Enfoque</p>", unsafe_allow_html=True)
+            st.markdown(f"<p class='t-label'>{L['enfoque']}</p>", unsafe_allow_html=True)
             filtro_mat = st.multiselect(
-                "Filtrar Categoría",
+                L['filtro_cat'],
                 options=materiales_presentes,
                 format_func=lambda x: NOMBRES_MATERIALES.get(x, x),
-                placeholder="Analizar todo",
+                placeholder=L['todo'],
                 label_visibility="collapsed",
             )
             st.divider()
-            # Botón de Cerrar Sesión movido al final de la sidebar
-            if st.button("Cerrar Sesión", key="btn_cerrar_sesion_datos", use_container_width=True):
+            if st.button(L['cerrar'], key="btn_cerrar_sesion_datos", width='stretch'):
                 st.session_state.clear()
                 st.rerun()
 
-        df_display  = df_res[df_res['tipo_mat'].isin(filtro_mat)] if filtro_mat else df_res
-        total_disp  = len(df_display)
+        df_display = df_res[df_res['tipo_mat'].isin(filtro_mat)] if filtro_mat else df_res
+        total_disp = len(df_display)
 
-        if total_disp > 0:
-            res_dinamico = {
+        res_dinamico = (
+            {
                 'score_global': df_display['Score_Calidad'].mean(),
                 'completitud':  df_display['Score_Completitud'].mean(),
                 'validez':      df_display['Score_Validez'].mean(),
                 'unicidad':     df_display['Score_Unicidad'].mean(),
                 'consistencia': df_display['Score_Consistencia'].mean(),
             }
-        else:
-            res_dinamico = {k: 0.0 for k in ['score_global', 'completitud', 'validez', 'unicidad', 'consistencia']}
+            if total_disp > 0
+            else {k: 0.0 for k in ['score_global', 'completitud', 'validez', 'unicidad', 'consistencia']}
+        )
 
         nombre_origen = st.session_state.get('origen_datos', "Sin_Nombre")
-        if ('id_ejecucion' not in st.session_state or st.session_state.get('last_file') != nombre_origen):
-            st.session_state['id_ejecucion'] = guardar_auditoria(df_display, st.session_state['usuario_actual'], dominio_seleccionado, res_dinamico, filtro_mat)
+        if 'id_ejecucion' not in st.session_state or st.session_state.get('last_file') != nombre_origen:
+            st.session_state['id_ejecucion'] = guardar_auditoria(
+                df_display, st.session_state['usuario_actual'],
+                dominio_seleccionado, res_dinamico, filtro_mat,
+            )
             st.session_state['last_file'] = nombre_origen
 
+        # ── Encabezado ───────────────────────────────────────────
         col_hdr, col_hdr2 = st.columns([3, 1])
         with col_hdr:
             origen_label = st.session_state.get('origen_datos', '—')
-            st.markdown(f"""<div style="margin-bottom:4px;"><p class='t-label' style='margin-bottom:4px;'></p><h2 style="font-family:'IBM Plex Mono',monospace;font-size:20px;font-weight:700;color:#E6EDF3;margin:0;letter-spacing:-0.3px;">{dominio_seleccionado}</h2><p style="font-family:'IBM Plex Sans',sans-serif;font-size:12px;color:#484F58;margin:4px 0 0;">{total_disp:,} registros · {origen_label}</p></div>""", unsafe_allow_html=True)
+            st.markdown(
+                f"""<div style="margin-bottom:4px;">
+                  <p class='t-label' style='margin-bottom:4px;'></p>
+                  <h2 style="font-family:'IBM Plex Mono',monospace;font-size:20px;
+                    font-weight:700;color:{_text_color};margin:0;letter-spacing:-0.3px;">
+                    {dominio_seleccionado}
+                  </h2>
+                  <p style="font-family:'IBM Plex Sans',sans-serif;font-size:12px;
+                    color:{_email_color};margin:4px 0 0;">
+                    {total_disp:,} {L['registros_lbl']} · {origen_label}
+                  </p>
+                </div>""",
+                unsafe_allow_html=True,
+            )
 
         if not st.session_state.get('reglas_ia_dinamicas'):
-            st.markdown(f"<div class='talon-card-accent' style='border-left-color:#D29922;margin-bottom:20px;'><p style='font-family:\"IBM Plex Sans\",sans-serif;font-size:12px;color:#D29922;margin:0;'>Sin reglas de IA cargadas — ejecuta <b>Autoperfilar con IA</b> en el panel izquierdo para activar los scores completos.</p></div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div class='talon-card-accent' style='border-left-color:#D29922;margin-bottom:20px;'>"
+                f"<p style='font-family:\"IBM Plex Sans\",sans-serif;font-size:12px;color:#D29922;margin:0;'>"
+                f"{L['sin_reglas']}"
+                "</p></div>",
+                unsafe_allow_html=True,
+            )
 
         renderizar_metricas(res_dinamico)
 
-        col_acc1, col_acc2, col_acc3 = st.columns([1, 1, 2])
+        # ── Acciones ─────────────────────────────────────────────
+        col_acc1, col_acc2, _ = st.columns([3, 2, 1])
         excel_bytes = generar_excel_saneamiento_memoria(df_display)
 
         with col_acc1:
+            st.markdown('<div class="btn-exportar">', unsafe_allow_html=True)
             st.download_button(
-                label="Exportar Saneamiento (.xlsx)",
+                label=L['exportar'],
                 data=excel_bytes,
                 file_name=f"TALON_Saneamiento_{int(time.time())}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+                type="primary",
+                width='stretch',
             )
+            st.markdown('</div>', unsafe_allow_html=True)
 
         with col_acc2:
-            key_custodio = filtro_mat[0] if len(filtro_mat) == 1 else "DEFAULT"
-            sugerencia_correo = CUSTODIOS.get(key_custodio, "gobiernodatos@brinsa.com.co")
-
-            with st.popover("Notificar Custodio", use_container_width=True):
-                st.markdown("<p class='t-label' style='margin-bottom:12px;'>Enviar reporte</p>", unsafe_allow_html=True)
-                correo_destino = st.text_input("Correo del responsable", value=sugerencia_correo)
-                if st.button("Enviar Excel", type="primary", use_container_width=True):
+            key_custodio       = filtro_mat[0] if len(filtro_mat) == 1 else "DEFAULT"
+            sugerencia_correo  = CUSTODIOS.get(key_custodio, "gobiernodatos@brinsa.com.co")
+            st.markdown('<div class="btn-notificar">', unsafe_allow_html=True)
+            with st.popover(L['notificar'], width='stretch'):
+                st.markdown(f"<p class='t-label' style='margin-bottom:12px;'>{L['enviar_reporte']}</p>", unsafe_allow_html=True)
+                correo_destino = st.text_input(L['correo_resp'], value=sugerencia_correo)
+                if st.button(L['enviar_excel'], type="primary", width='stretch'):
                     if not correo_destino or "@" not in correo_destino:
-                        st.error("Ingresa un correo válido.")
+                        _msg_correo = "Ingresa un correo válido." if st.session_state.get('idioma', 'es') == 'es' else "Enter a valid email."
+                        st.error(_msg_correo)
                     else:
-                        with st.spinner("Enviando..."):
+                        with st.spinner("Enviando…"):
                             from infra.notificador import enviar_correo_talon
                             errores_totales = len(df_display[df_display['Score_Calidad'] < 100])
-                            exito, mensaje = enviar_correo_talon(correo_custodio=correo_destino, correo_auditor=st.session_state['usuario_actual'], dominio=dominio_seleccionado, score=round(res_dinamico['score_global'], 1), total_errores=errores_totales, archivo_bytes=excel_bytes)
+                            exito, mensaje  = enviar_correo_talon(
+                                correo_custodio=correo_destino,
+                                correo_auditor=st.session_state['usuario_actual'],
+                                dominio=dominio_seleccionado,
+                                score=round(res_dinamico['score_global'], 1),
+                                total_errores=errores_totales,
+                                archivo_bytes=excel_bytes,
+                            )
                             if exito: st.success(f"Enviado a {correo_destino}.")
-                            else: st.error(f"Error: {mensaje}")
+                            else:     st.error(f"Error: {mensaje}")
+            st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
-        tab_dashboard, tab_ia, tab_datos, tab_historico = st.tabs(["Dashboard", "Asistente IA", "Explorador", "Historial"])
+        # ══════════════════════════════════════════════════════
+        #  PESTAÑAS — orden: Explorador · Dashboard · IA · Historial
+        # ══════════════════════════════════════════════════════
+        tab_datos, tab_dashboard, tab_ia, tab_historico = st.tabs([
+            L['tab_explorer'], L['tab_dashboard'], L['tab_ia'], L['tab_historial'],
+        ])
 
+        # ── EXPLORADOR (primera pestaña) ──────────────────────
+        with tab_datos:
+            try:
+                df_solo_fallas = df_display[df_display['Estado_Gestion'] == 0]
+                if not df_solo_fallas.empty:
+                    renderizar_tabla_hallazgos(df_solo_fallas)
+                else:
+                    st.success(L['sin_anomalias_ok'])
+            except Exception as e:
+                st.error(f"Error técnico en la tabla: {e}")
+
+        # ── DASHBOARD ─────────────────────────────────────────
         with tab_dashboard:
             col1, col2 = st.columns(2)
             with col1: renderizar_grafico_dimensiones(res_dinamico)
-            with col2: renderizar_grafico_top_errores(df_display)
+            with col2: renderizar_tabla_top_errores(df_display)
             renderizar_grafico_por_foco(df_display)
 
+        # ── ASISTENTE IA ──────────────────────────────────────
         with tab_ia:
-            st.markdown("<p class='t-label' style='margin-bottom:16px;'>Chat · Consultor Talon IA</p>", unsafe_allow_html=True)
+            st.markdown(f"<p class='t-label' style='margin-bottom:16px;'>{L['chat_label']}</p>", unsafe_allow_html=True)
             if st.session_state.get('reglas_ia_dinamicas'):
                 _, col_btn = st.columns([4, 1])
                 with col_btn:
-                    if st.button("Guardar como Reglas Prime", use_container_width=True):
+                    if st.button(L['guardar_prime'], width='stretch'):
                         resultado = guardar_reglas_prime(st.session_state['reglas_ia_dinamicas'], dominio_seleccionado)
                         st.success(resultado)
 
-            contexto_str = ("Global" if not filtro_mat else f"Filtro: {', '.join(filtro_mat)}")
-            if (not st.session_state.get('chat_historial') or st.session_state.get('ia_contexto_chat') != contexto_str):
-                bienvenida = f"**Hola, soy Talon.**\n\nAnalicé **{total_disp:,}** registros y detecté un score global de **{res_dinamico['score_global']:.1f}%**.\n\n¿Por dónde comenzamos? Puedo explicar las anomalías o ayudarte a ajustar las reglas de validación."
-                st.session_state['chat_historial'] = [{"role": "assistant", "content": bienvenida}]
+            contexto_str = "Global" if not filtro_mat else f"Filtro: {', '.join(filtro_mat)}"
+            if (
+                not st.session_state.get('chat_historial')
+                or st.session_state.get('ia_contexto_chat') != contexto_str
+            ):
+                bienvenida = L['chat_bienvenida'].format(n=total_disp, s=res_dinamico['score_global'])
+                st.session_state['chat_historial']   = [{"role": "assistant", "content": bienvenida}]
                 st.session_state['ia_contexto_chat'] = contexto_str
 
             contenedor_mensajes = st.container(height=400)
             with contenedor_mensajes:
                 for msg in st.session_state['chat_historial']:
-                    with st.chat_message(msg["role"]): st.markdown(msg["content"])
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
 
-            if prompt_usuario := st.chat_input("Pregúntale a Talon sobre las anomalías..."):
+            if prompt_usuario := st.chat_input(L['chat_input']):
                 st.session_state['chat_historial'].append({"role": "user", "content": prompt_usuario})
                 with contenedor_mensajes:
-                    with st.chat_message("user"): st.markdown(prompt_usuario)
+                    with st.chat_message("user"):
+                        st.markdown(prompt_usuario)
                     with st.chat_message("assistant"):
-                        respuesta_ia = responder_chat_ia(prompt_usuario, df_display.head(5), contexto_str, st.session_state['chat_historial'][:-1])
+                        respuesta_ia = responder_chat_ia(
+                            prompt_usuario, df_display.head(5),
+                            contexto_str, st.session_state['chat_historial'][:-1],
+                        )
                         st.markdown(respuesta_ia)
                         st.session_state['chat_historial'].append({"role": "assistant", "content": respuesta_ia})
                 st.rerun()
 
+        # ── HISTORIAL ─────────────────────────────────────────
+        with tab_historico:
+            df_hist = obtener_historial_metricas()
+            if not df_hist.empty:
+                st.markdown(f"<p class='t-label' style='margin-bottom:12px;'>{L['auditorias_reg']}</p>", unsafe_allow_html=True)
+                st.dataframe(
+                    df_hist[['fecha', 'usuario', 'dominio', 'score_global', 'total_registros']],
+                    width='stretch', hide_index=True,
+                )
+            else:
+                st.markdown(
+                    "<div class='talon-card-accent' style='border-left-color:#484F58;'>"
+                    f"<p style='font-size:12px;color:#8B949E;margin:0;font-family:\"IBM Plex Sans\",sans-serif;'>"
+                    f"{L['sin_auditorias']}</p></div>",
+                    unsafe_allow_html=True,
+                )
+
+    # ══════════════════════════════════════════════════════════════
+    #  PANTALLA DE ESPERA — Sin datos cargados
+    #  Las gráficas se pre-inicializan en 0 de forma reactiva
+    # ══════════════════════════════════════════════════════════════
+    else:
+        with st.sidebar:
+            st.divider()
+            if st.button(L['cerrar'], key="btn_cerrar_sesion_vacio", width='stretch'):
+                st.session_state.clear()
+                st.rerun()
+
+        # Valores base en cero para pre-inicializar las gráficas
+        res_vacio = {k: 0.0 for k in ['score_global', 'completitud', 'validez', 'unicidad', 'consistencia']}
+
+        # ── Banner de estado según si la auto-carga está en curso ─
+        _auto_en_curso = (
+            fuente_datos == L['directa']
+            and st.session_state.get('_auto_carga_intento')
+            and 'datos_crudos_bd' not in st.session_state
+        )
+        if _auto_en_curso:
+            st.markdown(
+                "<div class='talon-card-accent' style='border-left-color:#3B82F6;margin-bottom:12px;'>"
+                f"<p style='font-size:12px;color:#3B82F6;margin:0;font-family:\"IBM Plex Sans\",sans-serif;'>"
+                f"{L['conectando_auto']}"
+                "</p></div>",
+                unsafe_allow_html=True,
+            )
+
+        # Métricas pre-inicializadas en 0
+        renderizar_metricas(res_vacio)
+
+        # ── Pestañas vacías pero visibles ─────────────────────
+        tab_datos, tab_dashboard, tab_ia, tab_historico = st.tabs([
+            L['tab_explorer'], L['tab_dashboard'], L['tab_ia'], L['tab_historial'],
+        ])
+
+        _msg_espera  = L['cargando_auto'] if _auto_en_curso else L['sin_datos_exp']
+        _color_borde = "#3B82F6" if _auto_en_curso else "#30363D"
+        _color_texto = "#3B82F6" if _auto_en_curso else _email_color
+
         with tab_datos:
-            try:
-                df_solo_fallas = df_display[df_display['Estado_Gestion'] == 0]
-                if not df_solo_fallas.empty: renderizar_tabla_hallazgos(df_solo_fallas)
-                else: st.success("¡Felicidades! No se encontraron anomalías pendientes.")
-            except Exception as e: st.error(f"Error técnico en la tabla: {e}")
+            st.markdown(
+                f"<div class='talon-card-accent' style='border-left-color:{_color_borde};'>"
+                f"<p style='font-size:12px;color:{_color_texto};margin:0;font-family:\"IBM Plex Sans\",sans-serif;'>"
+                f"{_msg_espera}"
+                "</p></div>",
+                unsafe_allow_html=True,
+            )
+
+        from ui.ui_components import _lbl as _comp_lbl
+        with tab_dashboard:
+            col1, col2 = st.columns(2)
+            with col1:
+                renderizar_grafico_dimensiones(res_vacio)
+            with col2:
+                mostrar_placeholder_grafica(_comp_lbl('top_anomalias'), _comp_lbl('sin_datos_anom'))
+            mostrar_placeholder_grafica(_comp_lbl('calidad_mat'), _comp_lbl('sin_datos_mat'))
+
+        with tab_ia:
+            st.markdown(
+                "<div class='talon-card-accent' style='border-left-color:#30363D;'>"
+                f"<p style='font-size:12px;color:{_email_color};margin:0;font-family:\"IBM Plex Sans\",sans-serif;'>"
+                f"{L['sin_datos_ia']}"
+                "</p></div>",
+                unsafe_allow_html=True,
+            )
 
         with tab_historico:
             df_hist = obtener_historial_metricas()
             if not df_hist.empty:
-                st.markdown("<p class='t-label' style='margin-bottom:12px;'>Auditorías registradas</p>", unsafe_allow_html=True)
-                st.dataframe(df_hist[['fecha', 'usuario', 'dominio', 'score_global', 'total_registros']], use_container_width=True, hide_index=True)
-            else: st.markdown("<div class='talon-card-accent' style='border-left-color:#484F58;'><p style='font-size:12px;color:#8B949E;margin:0;font-family:\"IBM Plex Sans\",sans-serif;'>Aún no hay auditorías registradas.</p></div>", unsafe_allow_html=True)
+                st.markdown(f"<p class='t-label' style='margin-bottom:12px;'>{L['auditorias_reg']}</p>", unsafe_allow_html=True)
+                st.dataframe(
+                    df_hist[['fecha', 'usuario', 'dominio', 'score_global', 'total_registros']],
+                    width='stretch', hide_index=True,
+                )
+            else:
+                st.markdown(
+                    "<div class='talon-card-accent' style='border-left-color:#484F58;'>"
+                    f"<p style='font-size:12px;color:#8B949E;margin:0;font-family:\"IBM Plex Sans\",sans-serif;'>"
+                    f"{L['sin_auditorias']}</p></div>",
+                    unsafe_allow_html=True,
+                )
 
-    # ── PANTALLA DE ESPERA (Sin Datos) ───────────────────────
-    else:
-        with st.sidebar:
-            st.divider()
-            if st.button("Cerrar Sesión", key="btn_cerrar_sesion_vacio", use_container_width=True):
-                st.session_state.clear()
-                st.rerun()
-
-        st.markdown(
-            """
-            <div style="text-align:center;margin-top:18vh;">
-              <p style="font-family:'IBM Plex Mono',monospace;font-size:40px;color:#30363D;margin-bottom:16px;"></p>
-              <h2 style="font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:700;color:#484F58;letter-spacing:-0.3px;margin:0;">
-                Talon está listo
-              </h2>
-              <p style="font-family:'IBM Plex Sans',sans-serif;font-size:13px;color:#30363D;margin-top:8px;max-width:320px;display:inline-block;">
-                Usa el panel izquierdo para cargar tu extracción<br>
-                de datos y comenzar la auditoría.
-              </p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )

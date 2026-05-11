@@ -1,7 +1,8 @@
+import os
 import google.generativeai as genai
 
-# Reemplaza con tu clave real solo para esta prueba
-genai.configure(api_key="AIzaSyAE1We938Ps0YAIqrpwEMucviqp9RNP_DE")
+# Configurar con la clave desde la variable de entorno o secrets.toml
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
 
 print("Modelos disponibles para generar texto:")
 for m in genai.list_models():

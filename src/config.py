@@ -35,8 +35,8 @@ DOMINIOS_CONFIG = CATALOGOS.get("dominios_config", {})
 
 # --- 5. CONFIGURACIÓN DEL MODELO DE IA ---
 def obtener_modelo_agente() -> str:
-    """Retorna el nombre oficial y estable del modelo de Google Gemini."""
-    return "gemini-1.5-pro" 
+    """Retorna el nombre del modelo de Google Gemini activo en T.A.L.O.N."""
+    return "gemini-2.5-flash"
 
 def configurar_api_ia():
     """Inicializa la llave de Gemini leyendo desde secrets.toml de Streamlit."""
@@ -52,5 +52,4 @@ def configurar_api_ia():
         print(f"Error configurando la API de Gemini: {e}")
         return False
 
-# Ejecutamos la configuración automáticamente
-configurar_api_ia()
+# La configuración de la API se llama explícitamente antes de cada uso en motor_ia.py

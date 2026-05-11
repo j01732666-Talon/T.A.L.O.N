@@ -39,7 +39,7 @@ def enviar_correo_talon(correo_custodio: str, correo_auditor: str, dominio: str,
                     </p>
                     <table width="100%" style="background-color: #f8f8f8; border: 1px solid #e0e0e0; padding: 20px;">
                         <tr><td class="data-table-td">Dominio</td><td class="data-table-td-val">{dominio}</td></tr>
-                        <tr><td class="data-table-td">Score Global</td><td class="data-table-td-val" style="color: #FF2B00;">{score}%</td></tr>
+                        <tr><td class="data-table-td">Score Global</td><td class="data-table-td-val" style="color: #B91C1C;">{score}%</td></tr>
                         <tr><td class="data-table-td">Registros a Sanear</td><td class="data-table-td-val">{total_errores}</td></tr>
                     </table>
                 </td>
@@ -53,7 +53,7 @@ def enviar_correo_talon(correo_custodio: str, correo_auditor: str, dominio: str,
     mensaje = MIMEMultipart()
     mensaje['From'] = f"T.A.L.O.N. Auditoría <{remitente_bot}>"
     mensaje['To'] = correo_custodio
-    mensaje['Subject'] = f"🚨 Alerta de Calidad: {dominio} ({score}%)"
+    mensaje['Subject'] = f"Alerta de Calidad — {dominio} ({score}%)"
     mensaje.add_header('reply-to', correo_auditor) 
     mensaje.attach(MIMEText(html_cuerpo, 'html'))
 
