@@ -162,6 +162,24 @@ def mostrar_panel_principal():
     # ══════════════════════════════════════════════════════════════
     inject_global_css()
 
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] > div:first-child {
+            display: flex;
+            flex-direction: column;
+        }
+        .talon-dev-footer {
+            margin-top: auto;
+            padding: 12px 16px 8px;
+            border-top: 1px solid #1E2530;
+        }
+        .talon-dev-footer p { margin: 0; line-height: 1.5; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # ══════════════════════════════════════════════════════════════
     #  SIDEBAR
     # ══════════════════════════════════════════════════════════════
@@ -315,7 +333,7 @@ def mostrar_panel_principal():
                     except Exception as e:
                         st.error(f"Error al cargar el tablero: {str(e)}")
 
-        if 'datos_crudos_bd' in st.session_state:
+        if datos_crudos is None and 'datos_crudos_bd' in st.session_state:
             datos_crudos = st.session_state['datos_crudos_bd']
 
     # ── BOTÓN IA ────────────────────────────────────────────────────
@@ -660,3 +678,24 @@ def mostrar_panel_principal():
                     unsafe_allow_html=True,
                 )
 
+    # ── Pie de sidebar — créditos de desarrollo (siempre visible) ─
+    with st.sidebar:
+        st.markdown(
+            """
+            <div class="talon-dev-footer">
+              <p style="font-family:'IBM Plex Sans',sans-serif;font-size:9px;
+                color:#30363D;letter-spacing:.5px;text-transform:uppercase;">
+                Desarrollado por
+              </p>
+              <p style="font-family:'IBM Plex Sans',sans-serif;font-size:10px;
+                color:#475569;font-weight:500;">
+                Jose Miguel Muñoz Ríos
+              </p>
+              <p style="font-family:'IBM Plex Mono',monospace;font-size:9px;
+                color:#30363D;letter-spacing:.3px;">
+                j01732666@gmail.com
+              </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
