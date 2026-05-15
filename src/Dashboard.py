@@ -6,6 +6,7 @@ if not st.session_state.get("connected"):
     st.switch_page("app.py")
     st.stop()
 
+import json as _json
 import pandas as pd
 import polars as pl
 import time
@@ -24,9 +25,43 @@ from ui.ui_components import (renderizar_metricas, renderizar_grafico_dimensione
                                renderizar_grafico_por_foco, mostrar_placeholder_grafica)
 from ui.theme import inject_global_css
 from infra.datalake_manager import inicializar_datalake, guardar_auditoria, obtener_historial_metricas
-from infra.auth_manager import inicializar_tabla_usuarios
 from infra.bigquery_client import (extraer_materiales_pendientes, cargar_resultados_auditoria,
                                     extraer_anomalias_pendientes, actualizar_fechas_materiales)
+
+
+def _email_auditor_sesion() -> str:
+    """Correo del usuario conectado (prioridad: usuario_actual → user_info.email)."""
+    return (
+        str(st.session_state.get("usuario_actual", "") or "").strip()
+        or str((st.session_state.get("user_info") or {}).get("email", "") or "").strip()
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _procesar_datos_cacheado(
+    datos_crudos: pd.DataFrame,
+    dominio: str,
+    reglas_ia_str,
+    usuario_auditor: str | None = None,
+) -> tuple:
+    """Wrapper cacheado del motor de auditoría.
+    El caché se invalida automáticamente si cambia el DataFrame, el dominio o las reglas.
+    """
+    reglas = _json.loads(reglas_ia_str) if reglas_ia_str else None
+    return ejecutar_auditoria_completa(
+        datos_crudos,
+        UNIDADES_REF,
+        None,
+        dominio,
+        reglas,
+        usuario_auditor=usuario_auditor,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _generar_excel_cacheado(df_display: pd.DataFrame) -> bytes:
+    """Generación de Excel cacheada — evita recalcular en cada rerun de Streamlit."""
+    return generar_excel_saneamiento_memoria(df_display)
 
 
 def mostrar_panel_principal():
@@ -82,6 +117,7 @@ def mostrar_panel_principal():
             'cargando_auto':    '⟳ &nbsp;Cargando datos desde TalonDB…',
             'sin_datos_exp':    'El explorador de anomalías aparecerá aquí una vez se carguen los datos.',
             'sin_datos_ia':     'El asistente IA estará disponible tras cargar los datos.',
+            'chat_subhint':     'Respuestas contextualizadas con la muestra cargada y el score actual.',
         },
         'en': {
             'config':       'Configuration',
@@ -126,6 +162,7 @@ def mostrar_panel_principal():
             'cargando_auto':    '⟳ &nbsp;Loading data from TalonDB…',
             'sin_datos_exp':    'The anomaly explorer will appear here once data is loaded.',
             'sin_datos_ia':     'The AI assistant will be available after loading data.',
+            'chat_subhint':     'Replies use your loaded sample rows and current scores.',
         },
     }
     L = _T[st.session_state['idioma']]
@@ -133,16 +170,10 @@ def mostrar_panel_principal():
     # ── FUNCIONES INTERNAS ──────────────────────────────────────────
     def ejecutar_auditoria_background(df_pendientes, dominio, reglas):
         try:
+            email_aud = _email_auditor_sesion()
             df_auditado, _ = ejecutar_auditoria_completa(
-                df_pendientes, UNIDADES_REF, None, dominio, reglas
+                df_pendientes, UNIDADES_REF, None, dominio, reglas, usuario_auditor=email_aud
             )
-            df_pandas = (
-                df_auditado.to_pandas()
-                if isinstance(df_auditado, pl.DataFrame)
-                else df_auditado.copy()
-            )
-            st.session_state['datos_crudos_bd'] = df_pandas
-            st.session_state['origen_datos']    = "TalonDB (BigQuery)"
             try:
                 cargar_resultados_auditoria(df_auditado)
             except Exception as e_bq:
@@ -151,11 +182,13 @@ def mostrar_panel_principal():
             print(f"ERROR FATAL EN EL MOTOR: {e}")
 
     def procesar_datos(datos_entrada, unidades, focos, dominio, reglas_ia):
-        return ejecutar_auditoria_completa(datos_entrada, unidades, focos, dominio, reglas_ia)
+        return ejecutar_auditoria_completa(
+            datos_entrada, unidades, focos, dominio, reglas_ia,
+            usuario_auditor=_email_auditor_sesion(),
+        )
 
     # Inicializar servicios
     inicializar_datalake()
-    inicializar_tabla_usuarios()
 
     # ══════════════════════════════════════════════════════════════
     #  CSS GLOBAL — Sistema de Diseño Enterprise Slate / Azure
@@ -216,9 +249,19 @@ def mostrar_panel_principal():
 
         st.divider()
 
-        st.markdown(f"<p class='t-label'>{L['config']}</p>", unsafe_allow_html=True)
-        opciones_dominio  = list(DOMINIOS_CONFIG.keys()) if DOMINIOS_CONFIG else ["Maestro de Materiales", "Directorio Comercial"]
-        dominio_seleccionado = st.radio(L['dominio'], opciones_dominio, label_visibility="collapsed")
+        st.markdown(
+            f"<p class='t-label' style='margin-bottom:6px;'>{L['config']}</p>"
+            f"<p class='t-label' style='font-size:9px;color:#2D3A4F;margin-bottom:4px;"
+            f"letter-spacing:1px;'>{L['dominio']}</p>",
+            unsafe_allow_html=True,
+        )
+        opciones_dominio = list(DOMINIOS_CONFIG.keys()) if DOMINIOS_CONFIG else ["Maestro de Materiales", "Directorio Comercial"]
+        dominio_seleccionado = st.selectbox(
+            L['dominio'],
+            opciones_dominio,
+            key="dominio_selector",
+            label_visibility="collapsed",
+        )
 
         st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
         fuente_datos = st.radio(
@@ -274,7 +317,8 @@ def mostrar_panel_principal():
                         else:
                             st.session_state['ultima_sync'] = time.strftime("%H:%M")
                     except Exception as e_auto:
-                        st.caption(f"⚠ Auto-carga: {str(e_auto)[:80]}")
+                        st.session_state['_auto_carga_intento'] = False
+                        st.error(f"Error al conectar con TalonDB: {e_auto}")
 
             # Estado de la última sincronización
             ultima_sync = st.session_state.get('ultima_sync', None)
@@ -297,18 +341,21 @@ def mostrar_panel_principal():
             if btn_sync:
                 with st.spinner(L['paso1']):
                     # Caso A: SKUs nuevos → auditar e insertar
-                    df_pendientes = extraer_materiales_pendientes()
-                    if df_pendientes is not None and len(df_pendientes) > 0:
-                        reglas_activas = st.session_state.get('reglas_ia_dinamicas')
-                        hilo = threading.Thread(
-                            target=ejecutar_auditoria_background,
-                            args=(df_pendientes, dominio_seleccionado, reglas_activas),
-                        )
-                        add_script_run_ctx(hilo)
-                        hilo.start()
-                        st.toast(f"✓ {len(df_pendientes)} registros nuevos enviados al motor de auditoría", icon="🔄")
-                    else:
-                        st.toast("Todo al día — sin registros nuevos en SAP", icon="✅")
+                    try:
+                        df_pendientes = extraer_materiales_pendientes()
+                        if df_pendientes is not None and len(df_pendientes) > 0:
+                            reglas_activas = st.session_state.get('reglas_ia_dinamicas')
+                            hilo = threading.Thread(
+                                target=ejecutar_auditoria_background,
+                                args=(df_pendientes, dominio_seleccionado, reglas_activas),
+                            )
+                            add_script_run_ctx(hilo)
+                            hilo.start()
+                            st.toast(f"✓ {len(df_pendientes)} registros nuevos enviados al motor de auditoría", icon="🔄")
+                        else:
+                            st.toast("Todo al día — sin registros nuevos en SAP", icon="✅")
+                    except Exception as e_caso_a:
+                        st.error(f"Error al buscar registros nuevos en SAP: {e_caso_a}")
 
                     # Caso B: SKUs existentes con fecha_actualiza cambiada → UPDATE
                     try:
@@ -387,10 +434,14 @@ def mostrar_panel_principal():
     #  CUERPO PRINCIPAL — SIEMPRE visible (con o sin datos)
     # ══════════════════════════════════════════════════════════════
     if datos_crudos is not None:
-        # ── Procesar datos ───────────────────────────────────────
+        # ── Procesar datos (cacheado — no recalcula si los inputs no cambian) ────
         reglas_actuales = st.session_state.get('reglas_ia_dinamicas')
-        df_res, res_original = procesar_datos(
-            datos_crudos, UNIDADES_REF, None, dominio_seleccionado, reglas_actuales
+        reglas_str = _json.dumps(reglas_actuales, sort_keys=True) if reglas_actuales else None
+        df_res, res_original = _procesar_datos_cacheado(
+            datos_crudos,
+            dominio_seleccionado,
+            reglas_str,
+            _email_auditor_sesion(),
         )
 
         materiales_presentes = []
@@ -470,7 +521,7 @@ def mostrar_panel_principal():
 
         # ── Acciones ─────────────────────────────────────────────
         col_acc1, col_acc2, _ = st.columns([3, 2, 1])
-        excel_bytes = generar_excel_saneamiento_memoria(df_display)
+        excel_bytes = _generar_excel_cacheado(df_display)
 
         with col_acc1:
             st.markdown('<div class="btn-exportar">', unsafe_allow_html=True)
@@ -511,7 +562,7 @@ def mostrar_panel_principal():
                             else:     st.error(f"Error: {mensaje}")
             st.markdown('</div>', unsafe_allow_html=True)
 
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
 
         # ══════════════════════════════════════════════════════
         #  PESTAÑAS — orden: Explorador · Dashboard · IA · Historial
@@ -540,7 +591,11 @@ def mostrar_panel_principal():
 
         # ── ASISTENTE IA ──────────────────────────────────────
         with tab_ia:
-            st.markdown(f"<p class='t-label' style='margin-bottom:16px;'>{L['chat_label']}</p>", unsafe_allow_html=True)
+            st.markdown(f"<p class='t-label' style='margin-bottom:8px;'>{L['chat_label']}</p>", unsafe_allow_html=True)
+            st.markdown(
+                f"<p class='talon-chat-subhint'>{L['chat_subhint']}</p>",
+                unsafe_allow_html=True,
+            )
             if st.session_state.get('reglas_ia_dinamicas'):
                 _, col_btn = st.columns([4, 1])
                 with col_btn:
@@ -557,7 +612,7 @@ def mostrar_panel_principal():
                 st.session_state['chat_historial']   = [{"role": "assistant", "content": bienvenida}]
                 st.session_state['ia_contexto_chat'] = contexto_str
 
-            contenedor_mensajes = st.container(height=400)
+            contenedor_mensajes = st.container(height=468)
             with contenedor_mensajes:
                 for msg in st.session_state['chat_historial']:
                     with st.chat_message(msg["role"]):

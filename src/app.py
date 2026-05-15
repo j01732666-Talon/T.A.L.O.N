@@ -6,6 +6,11 @@ import os
 import urllib.parse
 from ui.theme import inject_login_css
 
+# Ruta absoluta al JSON de credenciales SSO (raíz del proyecto, un nivel arriba de src/)
+_SSO_CREDS_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "credenciales_sso.json")
+)
+
 # ── Logos (cargados una vez al arrancar) ──────────────────────────
 _BRINSA_B64 = ""
 try:
@@ -38,14 +43,14 @@ st.set_page_config(
 #  2. LEER CREDENCIALES SSO
 # ══════════════════════════════════════════════════════════
 try:
-    with open("credenciales_sso.json", "r") as f:
+    with open(_SSO_CREDS_PATH, "r") as f:
         datos_json = json.load(f)
         creds = datos_json.get("web", datos_json.get("installed", {}))
         CLIENT_ID     = creds.get("client_id")
         CLIENT_SECRET = creds.get("client_secret")
         REDIRECT_URI  = "http://localhost:8501"
 except Exception:
-    st.error("No se encontró el archivo credenciales_sso.json o está mal configurado.")
+    st.error(f"No se encontró credenciales_sso.json o está mal configurado. Ruta buscada: {_SSO_CREDS_PATH}")
     st.stop()
 
 # ══════════════════════════════════════════════════════════

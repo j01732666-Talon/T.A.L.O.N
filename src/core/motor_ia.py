@@ -58,15 +58,21 @@ def _manejar_error_ia(exc: Exception) -> str:
     return f"**Error de IA:** {first_line}"
 
 def leer_reglas_prime(dominio: str) -> Optional[str]:
-    """Lee las reglas guardadas previamente para un dominio."""
-    nombre_archivo = f"{dominio.replace(' ', '_')}_Prime.json"
-    ruta = os.path.join("src", "data_ref", nombre_archivo)
+    """Lee las reglas del dominio activo desde reglas_cde.json.
+    guardar_reglas_prime() escribe en ese archivo (no en un _Prime.json independiente),
+    por lo que esta función debe leer el mismo fichero maestro.
+    """
+    _dir_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ruta = os.path.join(_dir_src, "data_ref", "reglas_cde.json")
     if os.path.exists(ruta):
         try:
             with open(ruta, 'r', encoding='utf-8') as f:
-                return f.read()
+                todas = json.load(f)
+            target_key = "Directorio_Comercial" if "Directorio" in dominio else "DEFAULT"
+            bloque = todas.get(target_key)
+            return json.dumps(bloque, ensure_ascii=False, indent=2) if bloque else None
         except Exception as e:
-            print(f"Error leyendo Reglas Prime: {e}")
+            print(f"Error leyendo reglas desde {ruta}: {e}")
     return None
 
 def guardar_reglas_prime(nuevas_reglas, dominio):
@@ -135,10 +141,15 @@ def generar_reglas_autonomas_ia(datos_crudos: pd.DataFrame, dominio: str) -> str
     radiografia = extraer_radiografia_datos(datos_crudos)
     reglas_previas = leer_reglas_prime(dominio)
     
+    contexto_previo = (
+        f"\n\nReglas Prime previas para este dominio (úsalas como referencia):\n{reglas_previas}"
+        if reglas_previas else ""
+    )
+
     prompt = f"""
     Actúa como un Arquitecto de Datos Maestro (DAMA). 
     Analiza este resumen estadístico de una tabla ({dominio}):
-    {str(datos_crudos)}
+    {radiografia}{contexto_previo}
     
     Genera un diccionario de reglas de calidad en formato JSON ESTRICTO para limpiar estos datos. 
     DEBES usar exactamente esta estructura y no agregar nada más:

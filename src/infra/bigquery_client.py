@@ -5,14 +5,26 @@ import os
 from google.oauth2 import service_account
 from google.cloud import bigquery
 
-def _obtener_cliente_bq():
-    """Función auxiliar interna para no repetir el código de conexión."""
-    ruta_credenciales = "credenciales_gcp.json"
-    if not os.path.exists(ruta_credenciales):
-        raise FileNotFoundError(f"No se encontró el archivo {ruta_credenciales} en la raíz del proyecto.")
-    
-    credentials = service_account.Credentials.from_service_account_file(ruta_credenciales)
+# Ruta absoluta al JSON de credenciales (raíz del proyecto, dos niveles arriba de src/infra/)
+_RUTA_CREDENCIALES = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "credenciales_gcp.json")
+)
+
+
+@st.cache_resource
+def get_bq_client() -> bigquery.Client:
+    """Cliente BigQuery cacheado — se instancia una sola vez por ciclo de vida de la app."""
+    if not os.path.exists(_RUTA_CREDENCIALES):
+        raise FileNotFoundError(
+            f"No se encontró el archivo de credenciales GCP en: {_RUTA_CREDENCIALES}"
+        )
+    credentials = service_account.Credentials.from_service_account_file(_RUTA_CREDENCIALES)
     return bigquery.Client(credentials=credentials, project=credentials.project_id)
+
+
+def _obtener_cliente_bq() -> bigquery.Client:
+    """Alias interno — delega al cliente cacheado para no instanciar múltiples veces."""
+    return get_bq_client()
 
 
 def extraer_materiales_pendientes() -> pl.DataFrame:
@@ -53,11 +65,20 @@ def actualizar_fechas_materiales() -> int:
 
         query_update = """
             UPDATE `brinsa-it-data-lake.SC_TALON.Materiales_TALONBD` AS destino
-            SET destino.Fecha_Actualizacion = origen.fecha_actualiza, 
-            destino.Fecha_Ingreso = origen.fecha_creacion,  -- Se agrega esta línea
-            destino.Fecha_Actualizacion_M = CURRENT_TIMESTAMP()
-            FROM `brinsa-it-data-lake.SC_TALON.VW_MAESTRO_MATERIALES` AS origen
+            SET
+                destino.Fecha_Actualizacion   = origen.fecha_actualiza,
+                destino.Fecha_Ingreso         = origen.fecha_creacion,
+                destino.Fecha_Actualizacion_M = CURRENT_TIMESTAMP()
+            FROM (
+                SELECT
+                    SKU,
+                    fecha_actualiza,
+                    fecha_creacion,
+                    ROW_NUMBER() OVER (PARTITION BY SKU ORDER BY fecha_actualiza DESC) AS rn
+                FROM `brinsa-it-data-lake.SC_TALON.VW_MAESTRO_MATERIALES`
+            ) AS origen
             WHERE CAST(destino.SKU AS STRING) = CAST(origen.SKU AS STRING)
+              AND origen.rn = 1
               AND IFNULL(CAST(origen.fecha_actualiza AS STRING),      '1900-01-01')
                != IFNULL(CAST(destino.Fecha_Actualizacion AS STRING), '1900-01-01')
         """

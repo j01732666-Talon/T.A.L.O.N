@@ -1,8 +1,6 @@
-streamlit>=1.30.0
+streamlit>=1.40.0
 pandas>=2.0.0
 polars>=0.20.0
-duckdb>=0.10.0
-bcrypt>=4.1.0
 openpyxl>=3.1.0
 gcsfs>=2023.10.0
 google-auth>=2.25.0

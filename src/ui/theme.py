@@ -10,6 +10,7 @@ JavaScript con st.components.v1.html() (iframe mismo-origen), que sí puede
 escribir en window.parent.document.head sin restricciones de sandboxing.
 """
 
+import math as _math
 import base64 as _b64
 import os as _os
 
@@ -70,9 +71,15 @@ FONTS_URL = ("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono"
 
 def obtener_color_semaforo(valor: float) -> str:
     """Semáforo en escala azul-gris. Sin arcoíris."""
-    if valor < 50:
+    try:
+        v = float(valor)
+    except (TypeError, ValueError):
         return STATE_CRITICAL
-    elif valor < 85:
+    if _math.isnan(v):
+        return STATE_CRITICAL
+    if v < 50:
+        return STATE_CRITICAL
+    elif v < 85:
         return STATE_WARNING
     return STATE_HEALTHY
 
@@ -416,14 +423,77 @@ button[data-testid="baseButton-primary"]:hover,
   text-transform: uppercase !important;
 }}
 
-/* ── Selectbox ────────────────────────────────── */
+/* ── Selectbox — combo animado ───────────────── */
 [data-baseweb="select"] > div {{
-  background-color: {BG_BASE} !important;
-  border-color: {BORDER_DEFAULT} !important;
-  border-radius: 6px !important;
+  background-color: {BG_ELEVATED} !important;
+  border: 1px solid {BORDER_DEFAULT} !important;
+  border-radius: 7px !important;
+  transition: border-color 0.22s ease, box-shadow 0.22s ease, background-color 0.22s ease !important;
+  cursor: pointer !important;
 }}
 [data-baseweb="select"] > div:hover {{
   border-color: {ACCENT_PRIMARY} !important;
+  background-color: {BG_OVERLAY} !important;
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.12), 0 2px 8px rgba(0,0,0,0.35) !important;
+}}
+[data-baseweb="select"] > div:focus-within {{
+  border-color: {ACCENT_PRIMARY} !important;
+  background-color: {BG_OVERLAY} !important;
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.18), 0 4px 16px rgba(59,130,246,0.12) !important;
+}}
+/* Texto del valor seleccionado */
+[data-baseweb="select"] [data-testid="stMarkdownContainer"] p,
+[data-baseweb="select"] span,
+[data-baseweb="select"] div[class*="singleValue"] {{
+  font-family: 'IBM Plex Sans', sans-serif !important;
+  font-size: 13px !important;
+  color: {TEXT_HIGH} !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.2px !important;
+}}
+/* Placeholder */
+[data-baseweb="select"] div[class*="placeholder"] {{
+  color: {TEXT_DISABLED} !important;
+  font-style: italic !important;
+}}
+/* Icono caret (chevron) */
+[data-baseweb="select"] svg {{
+  color: {ACCENT_PRIMARY} !important;
+  transition: transform 0.22s ease !important;
+}}
+[data-baseweb="select"] div[aria-expanded="true"] svg {{
+  transform: rotate(180deg) !important;
+}}
+/* Menú desplegable — slide-in animado */
+[data-baseweb="popover"] [data-baseweb="menu"] {{
+  background-color: {BG_ELEVATED} !important;
+  border: 1px solid {BORDER_DEFAULT} !important;
+  border-radius: 8px !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.55), 0 2px 8px rgba(59,130,246,0.08) !important;
+  animation: talon-dropdown-in 0.18s cubic-bezier(0.16,1,0.3,1) both !important;
+}}
+@keyframes talon-dropdown-in {{
+  from {{ opacity: 0; transform: translateY(-6px) scale(0.98); }}
+  to   {{ opacity: 1; transform: translateY(0)   scale(1);    }}
+}}
+/* Opciones del menú */
+[data-baseweb="option"] {{
+  background-color: transparent !important;
+  color: {TEXT_DEFAULT} !important;
+  font-family: 'IBM Plex Sans', sans-serif !important;
+  font-size: 13px !important;
+  border-radius: 5px !important;
+  margin: 2px 4px !important;
+  transition: background-color 0.14s ease, color 0.14s ease !important;
+}}
+[data-baseweb="option"]:hover {{
+  background-color: {ACCENT_SUBTLE} !important;
+  color: {ACCENT_BRIGHT} !important;
+}}
+[data-baseweb="option"][aria-selected="true"] {{
+  background-color: {ACCENT_SUBTLE} !important;
+  color: {ACCENT_HOVER} !important;
+  font-weight: 600 !important;
 }}
 
 /* ── Tabs ─────────────────────────────────────── */
@@ -437,7 +507,7 @@ button[data-testid="baseButton-primary"]:hover,
   color: {TEXT_MUTED} !important;
   border: none !important;
   border-bottom: 2px solid transparent !important;
-  padding: 10px 22px !important;
+  padding: 6px 12px !important;
   font-family: 'IBM Plex Mono', monospace !important;
   font-size: 11px !important;
   font-weight: 600 !important;
@@ -445,21 +515,108 @@ button[data-testid="baseButton-primary"]:hover,
   text-transform: uppercase !important;
   transition: color .2s, border-color .2s !important;
 }}
+@keyframes tabGlowBorder {{
+  0%,100% {{ box-shadow: 0 -2px 8px transparent; }}
+  50%      {{ box-shadow: 0 -2px 14px rgba(59,130,246,0.35); }}
+}}
 .stTabs [aria-selected="true"] {{
   color: {TEXT_HIGH} !important;
   border-bottom: 2px solid {ACCENT_PRIMARY} !important;
+  text-shadow: 0 0 12px rgba(59,130,246,0.22) !important;
+  animation: tabGlowBorder 3.5s ease-in-out infinite !important;
 }}
 .stTabs [data-baseweb="tab"]:hover {{ color: {TEXT_DEFAULT} !important; }}
 .stTabs [data-baseweb="tab-panel"] {{
-  padding-top: 24px !important;
+  padding-top: 10px !important;
   background-color: transparent !important;
+}}
+
+/* Columnas (st.columns) — hueco horizontal mínimo */
+[data-baseweb="tab-panel"] > [data-testid="stVerticalBlock"],
+[data-baseweb="tab-panel"] [data-testid="stVerticalBlock"] {{
+  gap: 0.4rem !important;
+}}
+/* Explorador: separación moderada entre el tip y la tabla (iframe) */
+[data-baseweb="tab-panel"] [data-testid="stVerticalBlock"]:has(.talon-explorer-tip) {{
+  gap: 0.75rem !important;
 }}
 
 /* ── Dataframe ────────────────────────────────── */
 [data-testid="stDataFrame"] {{
   border: 1px solid {BORDER_SUBTLE} !important;
-  border-radius: 6px !important;
+  border-radius: 10px !important;
   overflow: hidden !important;
+  box-shadow:
+    0 0 0 1px rgba(59,130,246,0.08),
+    0 12px 40px rgba(7,11,18,0.45) !important;
+  transition: box-shadow .35s ease, border-color .25s ease !important;
+  --gdg-cell-horizontal-padding: 4px !important;
+  --gdg-cell-vertical-padding: 1px !important;
+}}
+[data-testid="stDataFrame"]:hover {{
+  border-color: {BORDER_STRONG} !important;
+  box-shadow:
+    0 0 0 1px rgba(59,130,246,0.18),
+    0 16px 48px rgba(59,130,246,0.08) !important;
+}}
+
+/* Explorador — tip superior */
+.talon-explorer-tip {{
+  background: linear-gradient(135deg, {BG_ELEVATED} 0%, {BG_SURFACE} 100%);
+  border: 1px solid {BORDER_DEFAULT};
+  border-left: 3px solid {ACCENT_PRIMARY};
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 0 !important;
+  animation: explorerTipIn .45s ease both;
+}}
+/* Explorador — tip "Cómo leer" (Streamlit envuelve el markdown; el hueco hasta la tabla es el gap de la columna) */
+div[data-testid="element-container"]:has(.talon-explorer-tip) {{
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+}}
+div[data-testid="element-container"]:has(.talon-explorer-tip) [data-testid="stMarkdownContainer"],
+div[data-testid="element-container"]:has(.talon-explorer-tip) [data-testid="stMarkdownContainer"] p {{
+  margin-bottom: 0 !important;
+}}
+div[data-testid="element-container"]:has(.talon-explorer-tip) + div[data-testid="element-container"] {{
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}}
+.talon-explorer-tip-title {{
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: {ACCENT_HOVER};
+  margin: 0 0 6px 0;
+}}
+.talon-explorer-tip-text {{
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 11px;
+  line-height: 1.42;
+  color: {TEXT_DEFAULT};
+  margin: 0;
+}}
+@keyframes explorerTipIn {{
+  from {{ opacity: 0; transform: translateY(-6px); }}
+  to   {{ opacity: 1; transform: translateY(0); }}
+}}
+
+/* Tarjetas de medidor */
+.talon-meter-gauge {{
+  border-radius: 10px !important;
+  animation: gaugePop .55s cubic-bezier(.16,1,.3,1) both;
+}}
+.talon-meter-gauge:hover {{
+  box-shadow:
+    0 0 0 1px rgba(59,130,246,0.25),
+    0 8px 28px rgba(59,130,246,0.12) !important;
+}}
+@keyframes gaugePop {{
+  from {{ opacity: 0; transform: translateY(8px) scale(.96); }}
+  to   {{ opacity: 1; transform: none; }}
 }}
 
 /* ── Alertas ──────────────────────────────────── */
@@ -525,22 +682,51 @@ button[data-testid="baseButton-primary"]:hover,
 }}
 @keyframes pulse {{ 0%,100%{{opacity:1}} 50%{{opacity:.2}} }}
 
-/* ── Chat ─────────────────────────────────────── */
+[data-testid="stChatMessage"] {{
+  animation: chatMsgIn .4s cubic-bezier(.16,1,.3,1) both !important;
+}}
+@keyframes chatMsgIn {{
+  from {{ opacity: 0; transform: translateY(10px); }}
+  to   {{ opacity: 1; transform: none; }}
+}}
 [data-testid="stChatMessageContent"] {{
-  background-color: {BG_ELEVATED} !important;
+  background: linear-gradient(145deg, {BG_ELEVATED} 0%, {BG_SURFACE} 100%) !important;
   border: 1px solid {BORDER_SUBTLE} !important;
-  border-radius: 6px !important;
+  border-radius: 14px !important;
   font-family: 'IBM Plex Sans', sans-serif !important;
   font-size: 13px !important;
+  line-height: 1.55 !important;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.28) !important;
+  transition: border-color .2s ease, box-shadow .25s ease !important;
+}}
+[data-testid="stChatMessageContent"]:hover {{
+  border-color: rgba(59,130,246,0.35) !important;
+  box-shadow: 0 8px 32px rgba(59,130,246,0.12) !important;
+}}
+[data-testid="stChatFloatingInputContainer"], [data-testid="stBottomBlockContainer"] .stChatInput {{
+  backdrop-filter: blur(8px) !important;
 }}
 .stChatInput textarea {{
-  background-color: {BG_ELEVATED} !important;
+  background-color: rgba(22,27,34,0.92) !important;
   border: 1px solid {BORDER_DEFAULT} !important;
-  border-radius: 6px !important;
+  border-radius: 12px !important;
   color: {TEXT_HIGH} !important;
+  transition: border-color .2s ease, box-shadow .25s ease !important;
 }}
-
-/* ── File uploader ────────────────────────────── */
+.stChatInput textarea:focus {{
+  border-color: {ACCENT_PRIMARY} !important;
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.15), 0 4px 20px rgba(59,130,246,0.12) !important;
+}}
+.talon-chat-subhint {{
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 11px;
+  color: {TEXT_MUTED};
+  line-height: 1.5;
+  margin: 0 0 14px 0;
+  padding-left: 2px;
+  border-left: 2px solid {ACCENT_SUBTLE};
+  padding-left: 10px;
+}}
 [data-testid="stFileUploader"] {{
   background-color: {BG_BASE} !important;
   border: 1px dashed {BORDER_DEFAULT} !important;
@@ -568,10 +754,10 @@ button[data-testid="baseButton-primary"]:hover,
   background-color: {ACCENT_PRIMARY} !important;
 }}
 
-/* ── Layout ───────────────────────────────────── */
-.block-container {{ padding-top: 24px !important; padding-bottom: 40px !important; }}
+/* ── Layout — contenido principal más denso (vista análisis) ───────────────── */
+.block-container {{ padding: 10px 1.25rem 14px 1.25rem !important; max-width: 100% !important; }}
 
-/* ── Colapsar iframes de inyección CSS ───────── */
+/* ── Colapsar iframes de inyección CSS (fuera de pestañas) ───────── */
 [data-testid="stIFrame"] {{
   height: 1px !important;
   min-height: 0 !important;
@@ -579,6 +765,33 @@ button[data-testid="baseButton-primary"]:hover,
   margin: 0 !important;
   padding: 0 !important;
   line-height: 0 !important;
+}}
+
+/*
+  En pestañas, components.html sí tiene UI (p. ej. Copiar SKUs).
+  El colapso 1px deja el envoltorio a ~38px y el iframe invisible → banda negra vacía.
+*/
+[data-baseweb="tab-panel"] div[data-testid="element-container"]:has(iframe) {{
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}}
+[data-baseweb="tab-panel"] [data-testid="stIFrame"] {{
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: visible !important;
+  line-height: normal !important;
+}}
+[data-baseweb="tab-panel"] [data-testid="stIFrame"] iframe {{
+  height: 38px !important;
+  min-height: 38px !important;
+  overflow: visible !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: block !important;
+  vertical-align: top !important;
 }}
 
 /* ── Animaciones ──────────────────────────────── */
@@ -934,6 +1147,8 @@ def _inject_css_via_iframe(css: str) -> None:
   try {{
     var iframes = par.querySelectorAll('iframe[title="streamlit_html"]');
     iframes.forEach(function(f) {{
+      /* No colapsar components.html con UI (p. ej. Copiar SKUs en Explorador) */
+      if (f.closest('[data-baseweb="tab-panel"]')) return;
       f.style.cssText = 'height:1px!important;display:block!important;overflow:hidden!important;margin:0!important;padding:0!important;';
       var wrapper = f.closest('[data-testid="stIFrame"]');
       if (wrapper) wrapper.style.cssText = 'height:1px!important;overflow:hidden!important;margin:0!important;padding:0!important;min-height:0!important;';
@@ -959,6 +1174,12 @@ def _build_light_mode_css() -> str:
 .block-container, .stMainBlockContainer,
 [data-testid="stAppViewContainer"],
 section[data-testid="stMain"]           { background-color: #F0F4F8 !important; }
+
+/* Layout denso (alineado con tema oscuro) */
+.block-container, .stMainBlockContainer  { padding: 10px 1.25rem 14px 1.25rem !important; }
+[data-testid="stHorizontalBlock"]       { gap: 0.35rem !important; align-items: stretch !important; }
+[data-baseweb="tab-panel"] [data-testid="stVerticalBlock"] { gap: 0.4rem !important; }
+[data-baseweb="tab-panel"] [data-testid="stVerticalBlock"]:has(.talon-explorer-tip) { gap: 0.75rem !important; }
 
 /* ── Sidebar ────────────────────────────────── */
 [data-testid="stSidebar"]               { background-color: #FFFFFF !important; border-right: 1px solid #CBD5E1 !important; }

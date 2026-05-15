@@ -10,6 +10,37 @@ import google.generativeai as genai
 # --- 1. RUTA DINÁMICA ANTI-ERRORES ---
 DIR_ACTUAL = os.path.dirname(os.path.abspath(__file__))
 RUTA_CATALOGOS = os.path.join(DIR_ACTUAL, "data_ref", "catalogos_negocio.json")
+# Unidades de medida oficiales — raíz del proyecto: data_ref/Unidades de Referencia.txt
+_RUTA_UNIDADES_TXT = os.path.normpath(
+    os.path.join(DIR_ACTUAL, "..", "data_ref", "Unidades de Referencia.txt")
+)
+_RUTA_UNIDADES_TXT_ALT = os.path.join(DIR_ACTUAL, "data_ref", "Unidades de Referencia.txt")
+
+
+def _cargar_unidades_desde_txt() -> list[str]:
+    """
+    Lee códigos SAP de unidad desde data_ref/Unidades de Referencia.txt.
+    Formato por línea: CODIGO<TAB>Descripción (se usa solo el código).
+    """
+    rutas = (_RUTA_UNIDADES_TXT, _RUTA_UNIDADES_TXT_ALT)
+    for ruta in rutas:
+        if not os.path.isfile(ruta):
+            continue
+        try:
+            codigos: set[str] = set()
+            with open(ruta, encoding="utf-8") as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    codigo = line.split("\t", 1)[0].strip()
+                    if codigo:
+                        codigos.add(codigo.upper())
+            return sorted(codigos)
+        except OSError as e:
+            print(f"Error leyendo unidades desde {ruta}: {e}")
+    return []
+
 
 # --- 2. FUNCIÓN DE CARGA ---
 def cargar_catalogos_maestros():
@@ -28,7 +59,13 @@ def cargar_catalogos_maestros():
 CATALOGOS = cargar_catalogos_maestros()
 
 # --- 4. VARIABLES EXPORTADAS PARA APP.PY ---
-UNIDADES_REF = CATALOGOS.get("unidades_medida", [])
+_UNID_DESDE_TXT = _cargar_unidades_desde_txt()
+_UNID_DESDE_JSON = CATALOGOS.get("unidades_medida", [])
+UNIDADES_REF = (
+    _UNID_DESDE_TXT
+    if _UNID_DESDE_TXT
+    else (list(_UNID_DESDE_JSON) if isinstance(_UNID_DESDE_JSON, list) else [])
+)
 CUSTODIOS = CATALOGOS.get("custodios_por_tipo", {})
 NOMBRES_MATERIALES = CATALOGOS.get("mapeo_nombres_material", {})
 DOMINIOS_CONFIG = CATALOGOS.get("dominios_config", {}) 

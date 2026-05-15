@@ -9,7 +9,7 @@ import json
 import os
 import re
 import polars as pl
-from typing import Tuple, Any, List
+from typing import Tuple, Any, List, Optional
 
 def validar_esquema(columnas_actuales: List[str], columnas_requeridas: List[str]) -> List[str]:
     """
@@ -117,7 +117,35 @@ def adaptar_reglas_ia_a_motor(json_ia_str, dominio):
         return None
 
 
-def ejecutar_auditoria_completa(datos_entrada, unidades, focos, dominio="Maestro de Materiales", reglas_ia=None):
+def _merge_reglas(base: dict, overlay: dict) -> dict:
+    """
+    Fusiona dos diccionarios de reglas de forma profunda.
+    'overlay' extiende/sobreescribe campos de 'base' sin eliminar los que no menciona.
+    Esto permite que las reglas de la IA complementen las reglas manuales del JSON maestro.
+    """
+    resultado = {}
+    todas_las_claves = set(base.keys()) | set(overlay.keys())
+    for clave in todas_las_claves:
+        val_base    = base.get(clave)
+        val_overlay = overlay.get(clave)
+        if isinstance(val_base, dict) and isinstance(val_overlay, dict):
+            # Fusión profunda en dimensiones (Completitud, Validez, etc.)
+            resultado[clave] = {**val_base, **val_overlay}
+        elif val_overlay is not None:
+            resultado[clave] = val_overlay
+        else:
+            resultado[clave] = val_base
+    return resultado
+
+
+def ejecutar_auditoria_completa(
+    datos_entrada,
+    unidades,
+    focos,
+    dominio="Maestro de Materiales",
+    reglas_ia=None,
+    usuario_auditor: Optional[str] = None,
+):
     """
     Motor principal de evaluación de calidad. Procesa un archivo Excel y aplica reglas 
     vectorizadas de completitud, unicidad, validez y consistencia.
@@ -133,6 +161,7 @@ def ejecutar_auditoria_completa(datos_entrada, unidades, focos, dominio="Maestro
         focos (Any): Parámetro de enfoque de reglas.
         dominio (str, opcional): El contexto comercial de los datos. Por defecto es "Maestro de Materiales".
         reglas_ia (str, opcional): Cadena JSON con reglas generadas dinámicamente por la IA.
+        usuario_auditor (str, opcional): Correo del usuario en sesión; se persiste en `Usuario_Auditor` para BigQuery.
         
     Returns:
         Tuple[pd.DataFrame, dict]: 
@@ -166,17 +195,21 @@ def ejecutar_auditoria_completa(datos_entrada, unidades, focos, dominio="Maestro
 
     # =========================================================================
     # CARGA DE REGLAS MAESTRAS
+    # Siempre se carga reglas_cde.json como base y, si hay reglas de IA activas,
+    # se fusionan ENCIMA (extienden sin reemplazar las reglas manuales).
     # =========================================================================
+    reglas_base = cargar_reglas_json()
+
     if reglas_ia:
-        # EL ESCUDO: Si las reglas ya vienen listas de app.py, NO las tocamos
         if isinstance(reglas_ia, dict) and ("DEFAULT" in reglas_ia or "Directorio_Comercial" in reglas_ia):
-            reglas_maestras = reglas_ia
+            # Reglas IA ya en formato motor → fusionar sobre la base
+            reglas_maestras = _merge_reglas(reglas_base, reglas_ia)
         else:
-            reglas_maestras = adaptar_reglas_ia_a_motor(reglas_ia, dominio)
-            if not reglas_maestras: 
-                reglas_maestras = cargar_reglas_json()
+            # Reglas IA en formato crudo → adaptar primero, luego fusionar
+            adaptadas = adaptar_reglas_ia_a_motor(reglas_ia, dominio)
+            reglas_maestras = _merge_reglas(reglas_base, adaptadas) if adaptadas else reglas_base
     else:
-        reglas_maestras = cargar_reglas_json()
+        reglas_maestras = reglas_base
         
     # ADAPTADOR DE ESQUEMA MULTI-DOMINIO
     if "Directorio" in dominio:
@@ -352,7 +385,11 @@ def ejecutar_auditoria_completa(datos_entrada, unidades, focos, dominio="Maestro
         # Las descripciones como las pide la tabla
         pl.when(pl.col('Score_Calidad') == 100.0).then(pl.lit("Bueno")).otherwise(pl.lit("Malo")).alias('Estado_Gestion_Desc')
     ])
-    
+
+    # Auditor que ejecuta la carga — se guarda en Materiales_TALONBD vía cargar_resultados_auditoria
+    _aud = str(usuario_auditor).strip() if usuario_auditor else ""
+    df = df.with_columns(pl.lit(_aud).alias("Usuario_Auditor"))
+
     # Finalmente convertimos a Pandas
     pdf = df.to_pandas()
     

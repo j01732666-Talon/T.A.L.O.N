@@ -55,7 +55,7 @@ def enviar_correo_talon(correo_custodio: str, correo_auditor: str, dominio: str,
     mensaje['To'] = correo_custodio
     mensaje['Subject'] = f"Alerta de Calidad — {dominio} ({score}%)"
     mensaje.add_header('reply-to', correo_auditor) 
-    mensaje.attach(MIMEText(html_cuerpo, 'html'))
+    mensaje.attach(MIMEText(html_cuerpo, 'html', 'utf-8'))
 
     # 4. Adjuntar Excel
     if archivo_bytes:

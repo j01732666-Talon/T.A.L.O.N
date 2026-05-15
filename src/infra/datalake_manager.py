@@ -1,99 +1,115 @@
 """
-Gestor de persistencia local (Data Lake Serverless).
-Utiliza DuckDB para métricas históricas y Parquet para almacenamiento columnar de detalles.
+Gestor de persistencia — Data Lake Cloud (BigQuery).
+Reemplaza DuckDB local por la tabla Historial_Auditorias en BigQuery,
+eliminando la dependencia de rutas locales y ficheros .duckdb.
+
+API pública sin cambios:
+    inicializar_datalake()
+    guardar_auditoria(df_detalle, usuario, dominio, res_dinamico, materiales) -> str
+    obtener_historial_metricas() -> pd.DataFrame
 """
-import duckdb
 import pandas as pd
-import os
 import time
+import streamlit as st
+from datetime import datetime, timezone
 
-# Definición de rutas (Pueden ajustarse a una unidad de red corporativa, ej. Z:/DataLake)
-DIR_DATALAKE = "datalake_local"
-DIR_PARQUET = os.path.join(DIR_DATALAKE, "detalle_parquet")
-DB_PATH = os.path.join(DIR_DATALAKE, "talon_metastore.duckdb")
+TABLE_HISTORIAL = "brinsa-it-data-lake.SC_TALON.Historial_Auditorias"
 
-def inicializar_datalake():
+
+def _client():
+    """Devuelve el cliente BigQuery cacheado (instanciado en bigquery_client.py)."""
+    from infra.bigquery_client import get_bq_client
+    return get_bq_client()
+
+
+@st.cache_resource
+def inicializar_datalake() -> None:
     """
-    Inicializa la infraestructura del almacenamiento local (Data Lake).
-    
-    Asegura la creación del directorio necesario para los archivos Parquet. 
-    Posteriormente, establece una conexión con DuckDB y crea la tabla 
-    'historial_auditorias' (si no existe) para registrar las métricas de calidad.
+    Crea la tabla Historial_Auditorias en BigQuery si no existe.
+    Se ejecuta una sola vez por ciclo de vida de la aplicación gracias al caché.
     """
-    os.makedirs(DIR_PARQUET, exist_ok=True)
-    # El 'with' asegura que la conexión se cierre sola al terminar el bloque
-    with duckdb.connect(DB_PATH) as con:
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS historial_auditorias (
-                id_ejecucion VARCHAR,
-                fecha TIMESTAMP,
-                usuario VARCHAR,
-                dominio VARCHAR,
-                materiales_auditados VARCHAR,
-                total_registros INTEGER,
-                score_global DOUBLE,
-                completitud DOUBLE,
-                validez DOUBLE,
-                unicidad DOUBLE,
-                consistencia DOUBLE,
-                ruta_parquet VARCHAR
-            )
-        """)
+    query = f"""
+        CREATE TABLE IF NOT EXISTS `{TABLE_HISTORIAL}` (
+            id_ejecucion        STRING,
+            fecha               TIMESTAMP,
+            usuario             STRING,
+            dominio             STRING,
+            materiales_auditados STRING,
+            total_registros     INT64,
+            score_global        FLOAT64,
+            completitud         FLOAT64,
+            validez             FLOAT64,
+            unicidad            FLOAT64,
+            consistencia        FLOAT64
+        )
+    """
+    _client().query(query).result()
+
 
 def obtener_historial_metricas() -> pd.DataFrame:
     """
     Consulta y recupera el registro histórico de todas las auditorías realizadas.
 
     Returns:
-        pd.DataFrame: Dataframe con el historial de métricas, ordenado por fecha descendente.
+        pd.DataFrame: DataFrame con el historial de métricas, ordenado por fecha descendente.
+                      Devuelve un DataFrame vacío si ocurre cualquier error.
     """
-    with duckdb.connect(DB_PATH, read_only=True) as con:
-        df_hist = con.execute("SELECT * FROM historial_auditorias ORDER BY fecha DESC").df()
-    return df_hist
+    try:
+        query = f"SELECT * FROM `{TABLE_HISTORIAL}` ORDER BY fecha DESC"
+        return _client().query(query).result().to_dataframe()
+    except Exception:
+        return pd.DataFrame()
 
-def guardar_auditoria(df_detalle: pd.DataFrame, usuario: str, dominio: str, res_dinamico: dict, materiales: list) -> str:
+
+def guardar_auditoria(
+    df_detalle: pd.DataFrame,
+    usuario: str,
+    dominio: str,
+    res_dinamico: dict,
+    materiales: list,
+) -> str:
     """
-    Almacena el detalle de una auditoría y registra sus métricas principales en la base de datos.
-    
-    Exporta el DataFrame de resultados a un archivo Parquet, aprovechando su compresión 
-    y eficiencia columnar. Luego, inserta un registro resumen en DuckDB con los scores 
-    generales y las dimensiones evaluadas.
-    
+    Registra las métricas de una auditoría en la tabla Historial_Auditorias de BigQuery.
+
     Args:
         df_detalle (pd.DataFrame): El conjunto de datos evaluado con los hallazgos.
-        usuario (str): El identificador (ej. correo) del usuario que ejecutó la auditoría.
+        usuario (str): El identificador (email) del usuario que ejecutó la auditoría.
         dominio (str): El contexto de los datos analizados (ej. "Maestro de Materiales").
         res_dinamico (dict): Diccionario con las métricas y scores calculados por el motor.
-        materiales (list): Lista de los dominios o tipos de materiales específicos evaluados.
-        
+        materiales (list): Lista de los tipos de materiales específicos evaluados.
+
     Returns:
         str: El identificador único generado para esta ejecución (id_ejecucion).
     """
     id_ejecucion = f"AUD_{int(time.time())}"
-    ruta_archivo_parquet = os.path.join(DIR_PARQUET, f"{id_ejecucion}.parquet")
-    
-    # Exportar a Parquet (comprimido, rápido y eficiente en memoria)
-    df_detalle.to_parquet(ruta_archivo_parquet, engine='pyarrow', index=False)
-    
-    # Preparar datos para DuckDB
     materiales_str = ", ".join(materiales) if materiales else "Todos"
-    
-    with duckdb.connect(DB_PATH) as con:
-        con.execute("""
-            INSERT INTO historial_auditorias
-            VALUES (?, current_timestamp, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            id_ejecucion,
-            usuario,
-            dominio,
-            materiales_str,
-            len(df_detalle),
-            res_dinamico['score_global'],
-            res_dinamico['completitud'],
-            res_dinamico['validez'],
-            res_dinamico['unicidad'],
-            res_dinamico['consistencia'],
-            ruta_archivo_parquet,
-        ))
+
+    def _safe_float(val) -> float:
+        try:
+            result = float(val)
+            return result if result == result else 0.0  # NaN check
+        except (TypeError, ValueError):
+            return 0.0
+
+    row = {
+        "id_ejecucion":         id_ejecucion,
+        "fecha":                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "usuario":              usuario,
+        "dominio":              dominio,
+        "materiales_auditados": materiales_str,
+        "total_registros":      len(df_detalle),
+        "score_global":         _safe_float(res_dinamico.get("score_global")),
+        "completitud":          _safe_float(res_dinamico.get("completitud")),
+        "validez":              _safe_float(res_dinamico.get("validez")),
+        "unicidad":             _safe_float(res_dinamico.get("unicidad")),
+        "consistencia":         _safe_float(res_dinamico.get("consistencia")),
+    }
+
+    try:
+        errors = _client().insert_rows_json(TABLE_HISTORIAL, [row])
+        if errors:
+            raise Exception(str(errors))
+    except Exception as e:
+        st.toast(f"No se pudo registrar en el historial: {e}", icon="⚠️")
 
     return id_ejecucion
