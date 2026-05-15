@@ -62,6 +62,7 @@ _LABELS = {
         'explorer_hdr_estado_gestion': 'Estado Gestión',
         'explorer_hdr_tipo_mat': 'Tipo de Material',
         'graf_hdr_escala':     'Escala (0–100)',
+        'explorer_err_trunc':  'Mostrando las primeras {n} columnas de error; en los datos hay más tipos de hallazgo distintos.',
     },
     'en': {
         'score_global':    'Global Score',
@@ -96,6 +97,7 @@ _LABELS = {
         'explorer_hdr_estado_gestion': 'Management status',
         'explorer_hdr_tipo_mat': 'Material type',
         'graf_hdr_escala':       'Scale (0–100)',
+        'explorer_err_trunc':    'Showing the first {n} error columns; more distinct finding types exist in the data.',
     },
 }
 
@@ -146,6 +148,44 @@ def _label_for_nulo_field(col_name: str) -> str:
     if _lang_is_en():
         return _NULO_FIELD_LABELS_EN.get(base, base.replace('_', ' '))
     return _NULO_FIELD_LABELS_ES.get(base, base.replace('_', ' '))
+
+
+MAX_COLUMNAS_ERRORES_EXPLORADOR = 30
+
+
+def _explorador_matriz_hallazgos(
+    df_filtrado: pd.DataFrame,
+) -> Tuple[Dict[str, str], pd.DataFrame, bool]:
+    """
+    Una columna por texto distinto en Hallazgos_Detallados (coherente con la matriz Excel).
+    Devuelve: mapa err_i -> mensaje completo, DataFrame de columnas err_* , truncated si hubo límite.
+    """
+    if df_filtrado is None or len(df_filtrado) == 0:
+        return {}, pd.DataFrame(), False
+    if "Hallazgos_Detallados" not in df_filtrado.columns:
+        return {}, pd.DataFrame(index=df_filtrado.index), False
+
+    hall = df_filtrado["Hallazgos_Detallados"].fillna("").astype(str)
+    trozos: List[str] = []
+    for txt in hall:
+        for p in str(txt).split(", "):
+            p = p.strip()
+            if p and p not in ("Sin Errores", "nan"):
+                trozos.append(p)
+    fallas_u = sorted(set(trozos))
+    truncated = len(fallas_u) > MAX_COLUMNAS_ERRORES_EXPLORADOR
+    if truncated:
+        fallas_u = fallas_u[:MAX_COLUMNAS_ERRORES_EXPLORADOR]
+
+    mk_fail = _lbl("explorer_mark_fail")
+    err_map: Dict[str, str] = {}
+    cols_df: Dict[str, pd.Series] = {}
+    for i, falla in enumerate(fallas_u):
+        key = f"err_{i}"
+        err_map[key] = falla
+        cols_df[key] = hall.map(lambda x, f=falla: mk_fail if f in str(x) else "")
+
+    return err_map, pd.DataFrame(cols_df, index=df_filtrado.index), truncated
 
 
 def _nulo_check_failed(val) -> bool:
