@@ -1,6 +1,17 @@
 """
 Motor de Calidad de Datos (T.A.L.O.N - "Tablero Analítico de Limpieza y Orquestación de Negocios")
 Motor de Reglas Dinámico: Lee reglas desde un JSON y las aplica vectorialmente por tipo de material o dominio comercial.
+
+CORRECCIONES APLICADAS (v2):
+  Bug #1 — Score_Calidad se quedaba en 0.0 cuando tipo_mat no matcheaba ninguna clave del JSON.
+            Ahora el cálculo del score se ejecuta SIEMPRE para cada tipo, incluso si no hay reglas de penalización.
+  Bug #2 — null * peso = null en Polars, contaminando Score_Calidad cuando una dimensión era "anulada"
+            con pl.lit(None) antes de que otro tipo calculara su score.
+            Fix: fill_null(100.0) antes de multiplicar por el peso en el cálculo ponderado.
+  Bug #3 — Condición final usaba == 100.0 (comparación exacta de float) en lugar de >= 99.99.
+  Bug #4 — El clip de dimensiones se hacía en Pandas DESPUÉS de calcular Estado_Gestion en Polars,
+            por lo que scores negativos contaminaban Score_Calidad. El clip ahora se hace en Polars
+            antes del cálculo final.
 """
 import pandas as pd
 import numpy as np
@@ -10,6 +21,12 @@ import os
 import re
 import polars as pl
 from typing import Tuple, Any, List, Optional
+
+
+def _hallazgos_como_texto(expr: pl.Expr) -> pl.Expr:
+    """Evita ufunc add(bool, str) cuando la vista SAP trae una columna homónima booleana."""
+    return expr.cast(pl.Utf8, strict=False).fill_null("")
+
 
 def validar_esquema(columnas_actuales: List[str], columnas_requeridas: List[str]) -> List[str]:
     """
@@ -223,21 +240,51 @@ def ejecutar_auditoria_completa(
     if 'tipo_mat' not in df.columns: df = df.with_columns(pl.lit('DEFAULT').alias('tipo_mat'))
     if 'Desc_Material' not in df.columns: df = df.with_columns(pl.lit('').alias('Desc_Material'))
     if 'SKU_num' in df.columns: df = df.with_columns(pl.col('SKU_num').cast(pl.Utf8))
-            
+
+    # La vista SAP / extracción pueden traer columnas homónimas (Score_*, Estado_*).
+    # Si no las quitamos, pandas puede terminar con dos "Score_Calidad" y el umbral de estado falla.
+    _cols_sombra_bd = (
+        "Estado_Gestion",
+        "Estado_Gestion_Desc",
+        "Score_Calidad",
+        "Score_Unicidad",
+        "Score_Completitud",
+        "Score_Validez",
+        "Score_Consistencia",
+        "Hallazgos_Detallados",
+        "Usuario_Auditor",
+    )
+    _sombra_lc = {c.lower() for c in _cols_sombra_bd}
+    _drop_sombra = [c for c in df.columns if str(c).strip().lower() in _sombra_lc]
+    if _drop_sombra:
+        df = df.drop(_drop_sombra)
+
+    # ── Bug #1 fix: inicializar Score_Calidad en None para detectar si no fue calculado ──
     df = df.with_columns([
-        pl.lit(100.0).alias('Score_Unicidad'), pl.lit(100.0).alias('Score_Completitud'),
-        pl.lit(100.0).alias('Score_Validez'), pl.lit(100.0).alias('Score_Consistencia'),
-        pl.lit(0.0).alias('Score_Calidad'), pl.lit("").alias('Hallazgos_Detallados')
+        pl.lit(100.0).alias('Score_Unicidad'),
+        pl.lit(100.0).alias('Score_Completitud'),
+        pl.lit(100.0).alias('Score_Validez'),
+        pl.lit(100.0).alias('Score_Consistencia'),
+        # None en lugar de 0.0: si al final algún registro sigue en None,
+        # sabremos que su tipo_mat no fue procesado → lo tratamos como 100.
+        pl.lit(None, dtype=pl.Float64).alias('Score_Calidad'),
+        pl.lit("", dtype=pl.Utf8).alias('Hallazgos_Detallados'),
     ])
-    
-    tipos_presentes = df['tipo_mat'].unique().to_list()
+
+    tipos_presentes = [t for t in df['tipo_mat'].unique().to_list() if t is not None]
     
     # =========================================================================
     # APLICACIÓN VECTORIAL DE REGLAS (POLARS)
     # =========================================================================
     for tipo in tipos_presentes:
         reglas = reglas_maestras.get(tipo, reglas_maestras.get("DEFAULT", {}))
-        p = reglas.get("pesos_dimensiones", reglas_maestras.get("DEFAULT", {}).get("pesos_dimensiones", {"Completitud": 0.25, "Unicidad": 0.25, "Validez": 0.25, "Consistencia": 0.25}))
+        p = reglas.get(
+            "pesos_dimensiones",
+            reglas_maestras.get("DEFAULT", {}).get(
+                "pesos_dimensiones",
+                {"Completitud": 0.25, "Unicidad": 0.25, "Validez": 0.25, "Consistencia": 0.25},
+            ),
+        )
         
         mask_tipo = pl.col('tipo_mat') == tipo
 
@@ -264,9 +311,10 @@ def ejecutar_auditoria_completa(
                     if config.get("condicion_columna") in df.columns and config.get("condicion_valor"):
                         mask_regla = mask_regla & (pl.col(config["condicion_columna"]).cast(pl.Utf8) == str(config["condicion_valor"]))
                         
+                    _msg = str(config.get("mensaje", "") or "")
                     df = df.with_columns([
                         pl.when(mask_regla).then(pl.col('Score_Unicidad') - config['penalizacion']).otherwise(pl.col('Score_Unicidad')).alias('Score_Unicidad'),
-                        pl.when(mask_regla).then(pl.col('Hallazgos_Detallados') + config['mensaje'] + ", ").otherwise(pl.col('Hallazgos_Detallados')).alias('Hallazgos_Detallados')
+                        pl.when(mask_regla).then(_hallazgos_como_texto(pl.col('Hallazgos_Detallados')) + pl.lit(_msg) + pl.lit(", ")).otherwise(_hallazgos_como_texto(pl.col('Hallazgos_Detallados'))).alias('Hallazgos_Detallados')
                     ])
 
         # B. COMPLETITUD
@@ -281,21 +329,15 @@ def ejecutar_auditoria_completa(
                 if config.get("condicion_columna") in df.columns and config.get("condicion_valor"):
                     mask_regla = mask_regla & (pl.col(config["condicion_columna"]).cast(pl.Utf8) == str(config["condicion_valor"]))
                 
-                # --- NUEVO: CREACIÓN DINÁMICA DEL CAMPO BOOLEANO ---
-                # 1. Armamos el nombre exacto de la BD (ej: SKU_nulo)
+                # --- CREACIÓN DINÁMICA DEL CAMPO BOOLEANO ---
                 col_bd = f"{col}_{config['regla']}"
-                
-                # 2. Si la columna no existe aún, la creamos asumiendo True (1 = Todo bien)
                 if col_bd not in df.columns:
                     df = df.with_columns(pl.lit(True).alias(col_bd))
-                # --------------------------------------------------
 
-                # 3. Actualizamos el DataFrame
+                _msg = str(config.get("mensaje", "") or "")
                 df = df.with_columns([
                     pl.when(mask_regla).then(pl.col('Score_Completitud') - config['penalizacion']).otherwise(pl.col('Score_Completitud')).alias('Score_Completitud'),
-                    pl.when(mask_regla).then(pl.col('Hallazgos_Detallados') + config['mensaje'] + ", ").otherwise(pl.col('Hallazgos_Detallados')).alias('Hallazgos_Detallados'),
-                    
-                    # NUEVO: Si falla la regla (mask_regla), ponemos False (0). Si no, conservamos el valor que traía.
+                    pl.when(mask_regla).then(_hallazgos_como_texto(pl.col('Hallazgos_Detallados')) + pl.lit(_msg) + pl.lit(", ")).otherwise(_hallazgos_como_texto(pl.col('Hallazgos_Detallados'))).alias('Hallazgos_Detallados'),
                     pl.when(mask_regla).then(False).otherwise(pl.col(col_bd)).alias(col_bd)
                 ])
 
@@ -332,9 +374,10 @@ def ejecutar_auditoria_completa(
             if config.get("condicion_columna") in df.columns and config.get("condicion_valor"):
                 mask_regla = mask_regla & (pl.col(config["condicion_columna"]).cast(pl.Utf8) == str(config["condicion_valor"]))
 
+            _msg = str(config.get("mensaje", "") or "")
             df = df.with_columns([
                 pl.when(mask_regla).then(pl.col('Score_Validez') - config['penalizacion']).otherwise(pl.col('Score_Validez')).alias('Score_Validez'),
-                pl.when(mask_regla).then(pl.col('Hallazgos_Detallados') + config['mensaje'] + ", ").otherwise(pl.col('Hallazgos_Detallados')).alias('Hallazgos_Detallados')
+                pl.when(mask_regla).then(_hallazgos_como_texto(pl.col('Hallazgos_Detallados')) + pl.lit(_msg) + pl.lit(", ")).otherwise(_hallazgos_como_texto(pl.col('Hallazgos_Detallados'))).alias('Hallazgos_Detallados')
             ])
 
         # D. CONSISTENCIA
@@ -348,64 +391,85 @@ def ejecutar_auditoria_completa(
                     if config.get("condicion_columna") in df.columns and config.get("condicion_valor"):
                         mask_regla = mask_regla & (pl.col(config["condicion_columna"]).cast(pl.Utf8) == str(config["condicion_valor"]))
 
+                    _msg = str(config.get("mensaje", "") or "")
                     df = df.with_columns([
                         pl.when(mask_regla).then(pl.col('Score_Consistencia') - config['penalizacion']).otherwise(pl.col('Score_Consistencia')).alias('Score_Consistencia'),
-                        pl.when(mask_regla).then(pl.col('Hallazgos_Detallados') + config['mensaje'] + ", ").otherwise(pl.col('Hallazgos_Detallados')).alias('Hallazgos_Detallados')
+                        pl.when(mask_regla).then(_hallazgos_como_texto(pl.col('Hallazgos_Detallados')) + pl.lit(_msg) + pl.lit(", ")).otherwise(_hallazgos_como_texto(pl.col('Hallazgos_Detallados'))).alias('Hallazgos_Detallados')
                     ])
 
-        # CÁLCULO DE SCORE FINAL DE CALIDAD
+        # ── Bug #4 fix: clip de dimensiones en Polars, ANTES del cálculo del score final ──
+        # Esto garantiza que penalizaciones acumuladas que lleven un score a negativo
+        # no contaminen la ponderación del Score_Calidad.
+        df = df.with_columns([
+            pl.when(mask_tipo).then(pl.col('Score_Completitud').clip(lower_bound=0.0)).otherwise(pl.col('Score_Completitud')).alias('Score_Completitud'),
+            pl.when(mask_tipo).then(pl.col('Score_Validez').clip(lower_bound=0.0)).otherwise(pl.col('Score_Validez')).alias('Score_Validez'),
+            pl.when(mask_tipo).then(pl.col('Score_Unicidad').clip(lower_bound=0.0)).otherwise(pl.col('Score_Unicidad')).alias('Score_Unicidad'),
+            pl.when(mask_tipo).then(pl.col('Score_Consistencia').clip(lower_bound=0.0)).otherwise(pl.col('Score_Consistencia')).alias('Score_Consistencia'),
+        ])
+
+        # ── Bug #1 + #2 fix: cálculo ponderado siempre se ejecuta para este tipo.
+        # fill_null(100.0) evita que None (dimensiones anuladas) contamine la suma. ──
         df = df.with_columns([
             pl.when(mask_tipo).then(
-                pl.max_horizontal(0.0, pl.col('Score_Completitud')) * p.get('Completitud', 0) + 
-                pl.max_horizontal(0.0, pl.col('Score_Validez')) * p.get('Validez', 0) + 
-                pl.max_horizontal(0.0, pl.col('Score_Unicidad')) * p.get('Unicidad', 0) + 
-                pl.max_horizontal(0.0, pl.col('Score_Consistencia')) * p.get('Consistencia', 0)
+                pl.col('Score_Completitud').fill_null(100.0) * p.get('Completitud', 0.25) +
+                pl.col('Score_Validez').fill_null(100.0)     * p.get('Validez', 0.25) +
+                pl.col('Score_Unicidad').fill_null(100.0)    * p.get('Unicidad', 0.25) +
+                pl.col('Score_Consistencia').fill_null(100.0)* p.get('Consistencia', 0.25)
             ).otherwise(pl.col('Score_Calidad')).alias('Score_Calidad')
         ])
 
-        # ANULAR SCORES DE DIMENSIONES NO EVALUADAS
-        if float(p.get('Completitud', 0)) == 0.0: df = df.with_columns(pl.when(mask_tipo).then(pl.lit(None, dtype=pl.Float64)).otherwise(pl.col('Score_Completitud')).alias('Score_Completitud'))
-        if float(p.get('Validez', 0)) == 0.0: df = df.with_columns(pl.when(mask_tipo).then(pl.lit(None, dtype=pl.Float64)).otherwise(pl.col('Score_Validez')).alias('Score_Validez'))
-        if float(p.get('Unicidad', 0)) == 0.0: df = df.with_columns(pl.when(mask_tipo).then(pl.lit(None, dtype=pl.Float64)).otherwise(pl.col('Score_Unicidad')).alias('Score_Unicidad'))
-        if float(p.get('Consistencia', 0)) == 0.0: df = df.with_columns(pl.when(mask_tipo).then(pl.lit(None, dtype=pl.Float64)).otherwise(pl.col('Score_Consistencia')).alias('Score_Consistencia'))
+        # ANULAR SCORES DE DIMENSIONES NO EVALUADAS (solo para presentación visual)
+        # IMPORTANTE: este paso va DESPUÉS del cálculo del score para no contaminar la suma.
+        if float(p.get('Completitud', 0)) == 0.0:
+            df = df.with_columns(pl.when(mask_tipo).then(pl.lit(None, dtype=pl.Float64)).otherwise(pl.col('Score_Completitud')).alias('Score_Completitud'))
+        if float(p.get('Validez', 0)) == 0.0:
+            df = df.with_columns(pl.when(mask_tipo).then(pl.lit(None, dtype=pl.Float64)).otherwise(pl.col('Score_Validez')).alias('Score_Validez'))
+        if float(p.get('Unicidad', 0)) == 0.0:
+            df = df.with_columns(pl.when(mask_tipo).then(pl.lit(None, dtype=pl.Float64)).otherwise(pl.col('Score_Unicidad')).alias('Score_Unicidad'))
+        if float(p.get('Consistencia', 0)) == 0.0:
+            df = df.with_columns(pl.when(mask_tipo).then(pl.lit(None, dtype=pl.Float64)).otherwise(pl.col('Score_Consistencia')).alias('Score_Consistencia'))
 
     # =========================================================================
-    # LIMPIEZA FINAL Y RESUMEN
+    # Bug #1 fix (cierre): si algún registro tiene Score_Calidad todavía en None
+    # significa que su tipo_mat no existía en el JSON ni en DEFAULT.
+    # Lo tratamos como perfecto (100.0) porque no hubo reglas que penalizarlo.
     # =========================================================================
-
-
+    df = df.with_columns([
+        pl.col('Score_Calidad').fill_null(100.0).alias('Score_Calidad')
+    ])
 
     # =========================================================================
     # ESTADO DE GESTIÓN (Para la BD)
     # =========================================================================
+    # ── Bug #3 fix: >= 99.99 en lugar de == 100.0 para tolerar imprecisión float ──
     df = df.with_columns([
-        # Si el Score_Calidad es 100 (sin fallas), Estado_Gestion = 1. Si falla algo, 0.
-        pl.when(pl.col('Score_Calidad') == 100.0).then(1).otherwise(0).alias('Estado_Gestion'),
-        
-        # Las descripciones como las pide la tabla
-        pl.when(pl.col('Score_Calidad') == 100.0).then(pl.lit("Bueno")).otherwise(pl.lit("Malo")).alias('Estado_Gestion_Desc')
+        pl.when(pl.col('Score_Calidad') >= 99.99).then(1).otherwise(0).alias('Estado_Gestion'),
+        pl.when(pl.col('Score_Calidad') >= 99.99).then(pl.lit("Bueno")).otherwise(pl.lit("Malo")).alias('Estado_Gestion_Desc')
     ])
 
-    # Auditor que ejecuta la carga — se guarda en Materiales_TALONBD vía cargar_resultados_auditoria
+    # Auditor que ejecuta la carga — se guarda en Materiales_TALONBD vía infra.actualizar_datos_BigQuey.cargar_resultados_auditoria
     _aud = str(usuario_auditor).strip() if usuario_auditor else ""
     df = df.with_columns(pl.lit(_aud).alias("Usuario_Auditor"))
 
     # Finalmente convertimos a Pandas
     pdf = df.to_pandas()
-    
-    pdf['Score_Unicidad'] = pdf['Score_Unicidad'].clip(lower=0)
-    pdf['Score_Completitud'] = pdf['Score_Completitud'].clip(lower=0)
-    pdf['Score_Validez'] = pdf['Score_Validez'].clip(lower=0)
+
+    # ── Bug #4 fix (complemento): el clip en Pandas ahora es solo un seguro residual
+    # para columnas que puedan haber quedado en None tras la anulación de dimensiones.
+    # Ya no afecta a Estado_Gestion porque el clip real ocurrió en Polars arriba. ──
+    pdf['Score_Unicidad']     = pdf['Score_Unicidad'].clip(lower=0)
+    pdf['Score_Completitud']  = pdf['Score_Completitud'].clip(lower=0)
+    pdf['Score_Validez']      = pdf['Score_Validez'].clip(lower=0)
     pdf['Score_Consistencia'] = pdf['Score_Consistencia'].clip(lower=0)
     
     resumen = {}
     if not pdf.empty:
         resumen = {
-            'score_global': pdf['Score_Calidad'].mean() if 'Score_Calidad' in pdf.columns else 0,
-            'completitud': pdf['Score_Completitud'].mean() if 'Score_Completitud' in pdf.columns else 0,
-            'validez': pdf['Score_Validez'].mean() if 'Score_Validez' in pdf.columns else 0,
-            'unicidad': pdf['Score_Unicidad'].mean() if 'Score_Unicidad' in pdf.columns else 0,
-            'consistencia': pdf['Score_Consistencia'].mean() if 'Score_Consistencia' in pdf.columns else 0
+            'score_global':  pdf['Score_Calidad'].mean()      if 'Score_Calidad'      in pdf.columns else 0,
+            'completitud':   pdf['Score_Completitud'].mean()  if 'Score_Completitud'  in pdf.columns else 0,
+            'validez':       pdf['Score_Validez'].mean()      if 'Score_Validez'      in pdf.columns else 0,
+            'unicidad':      pdf['Score_Unicidad'].mean()     if 'Score_Unicidad'     in pdf.columns else 0,
+            'consistencia':  pdf['Score_Consistencia'].mean() if 'Score_Consistencia' in pdf.columns else 0,
         }
 
     return pdf, resumen
@@ -460,10 +524,7 @@ def generar_excel_saneamiento_memoria(df: pd.DataFrame) -> bytes:
                     nombre_hoja = f"{base_nombre[:28]}_{contador}"
                     contador += 1
                 
-                # 🚀 EL TRUCO ESTÁ AQUÍ: Creamos una lista solo con lo base + esta falla
                 columnas_limpias = columnas_finales + [falla]
-                
-                # Exportamos usando esa lista reducida de columnas
                 df_falla[columnas_limpias].to_excel(writer, index=False, sheet_name=nombre_hoja)
         
     return output.getvalue()

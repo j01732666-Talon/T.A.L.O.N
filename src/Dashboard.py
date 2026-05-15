@@ -25,8 +25,15 @@ from ui.ui_components import (renderizar_metricas, renderizar_grafico_dimensione
                                renderizar_grafico_por_foco, mostrar_placeholder_grafica)
 from ui.theme import inject_global_css
 from infra.datalake_manager import inicializar_datalake, guardar_auditoria, obtener_historial_metricas
-from infra.bigquery_client import (extraer_materiales_pendientes, cargar_resultados_auditoria,
-                                    extraer_anomalias_pendientes, actualizar_fechas_materiales)
+from infra.bigquery_client import (
+    extraer_materiales_pendientes,
+    extraer_anomalias_pendientes,
+    actualizar_fechas_materiales,
+)
+from infra.actualizar_datos_BigQuey import (
+    asignar_estado_gestion_para_bigquery,
+    cargar_resultados_auditoria,
+)
 
 
 def _email_auditor_sesion() -> str:
@@ -174,12 +181,15 @@ def mostrar_panel_principal():
             df_auditado, _ = ejecutar_auditoria_completa(
                 df_pendientes, UNIDADES_REF, None, dominio, reglas, usuario_auditor=email_aud
             )
+            asignar_estado_gestion_para_bigquery(df_auditado)
             try:
-                cargar_resultados_auditoria(df_auditado)
+                filas_insertadas = cargar_resultados_auditoria(df_auditado)
+                print(f"ÉXITO: Se insertaron {filas_insertadas} registros con estados actualizados.")
             except Exception as e_bq:
                 print(f"ERROR AL GUARDAR EN BIGQUERY: {e_bq}")
+                
         except Exception as e:
-            print(f"ERROR FATAL EN EL MOTOR: {e}")
+            print(f"ERROR CRÍTICO EN SEGUNDO PLANO: {e}")
 
     def procesar_datos(datos_entrada, unidades, focos, dominio, reglas_ia):
         return ejecutar_auditoria_completa(

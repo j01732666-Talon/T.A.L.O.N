@@ -1,9 +1,14 @@
 import streamlit as st
 import polars as pl
-import pandas as pd
 import os
+import pyarrow as pa
 from google.oauth2 import service_account
 from google.cloud import bigquery
+
+try:
+    import db_dtypes  # noqa: F401 — registra extensiones BigQuery en Arrow/Pandas cuando está instalado
+except ImportError:
+    pass
 
 # Ruta absoluta al JSON de credenciales (raíz del proyecto, dos niveles arriba de src/infra/)
 _RUTA_CREDENCIALES = os.path.normpath(
@@ -27,6 +32,27 @@ def _obtener_cliente_bq() -> bigquery.Client:
     return get_bq_client()
 
 
+def _arrow_query_job_a_polars(query_job) -> pl.DataFrame:
+    """
+    BigQuery marca DATETIME con extensión Arrow `google:sqlType:datetime`.
+    Polars/PyArrow avisan si no está registrada; cast al tipo de almacenamiento elimina el ruido
+    y deja timestamps/datetimes estándar.
+    """
+    table = query_job.result().to_arrow()
+    arrays = []
+    for i in range(table.num_columns):
+        field = table.schema.field(i)
+        col = table.column(i)
+        typ = field.type
+        if isinstance(typ, pa.ExtensionType):
+            col = col.cast(typ.storage_type)
+        elif getattr(pa.types, "is_extension_type", lambda t: False)(typ) and hasattr(typ, "storage_type"):
+            col = col.cast(typ.storage_type)
+        arrays.append(col)
+    clean = pa.table(arrays, names=table.column_names)
+    return pl.from_arrow(clean)
+
+
 def extraer_materiales_pendientes() -> pl.DataFrame:
     """
     Carga Incremental — Caso A: SKUs que aún NO existen en Materiales_TALONBD.
@@ -45,8 +71,7 @@ def extraer_materiales_pendientes() -> pl.DataFrame:
         """
 
         query_job = client.query(query)
-        df_resultado = pl.from_arrow(query_job.result().to_arrow())
-        return df_resultado
+        return _arrow_query_job_a_polars(query_job)
 
     except Exception as e:
         raise Exception(f"Fallo en la extracción incremental (Caso A): {str(e)}")
@@ -91,44 +116,6 @@ def actualizar_fechas_materiales() -> int:
         raise Exception(f"Fallo al actualizar fechas en Materiales_TALONBD: {str(e)}")
 
 
-def cargar_resultados_auditoria(df_resultados) -> int:
-    """
-    Inserción Masiva (Bulk Insert) a BigQuery.
-    """
-    if df_resultados is None or len(df_resultados) == 0:
-        return 0
-
-    try:
-        client = _obtener_cliente_bq()
-        table_id = "brinsa-it-data-lake.SC_TALON.Materiales_TALONBD"
-
-        # 1. Nos aseguramos de tener un DataFrame de Pandas
-        if isinstance(df_resultados, pl.DataFrame):
-            df_pd = df_resultados.to_pandas()
-        else:
-            df_pd = df_resultados.copy()
-
-        # --- NUEVO: LA CURA DE TIPOS DE DATOS (MÉTODO PANDAS) ---
-        # Convertimos la columna a tipo string nativo de pandas para que BQ la acepte
-        if "Usuario_Auditor" in df_pd.columns:
-            df_pd["Usuario_Auditor"] = df_pd["Usuario_Auditor"].astype("string")
-        # --------------------------------------------------------
-
-        job_config = bigquery.LoadJobConfig(
-            write_disposition="WRITE_APPEND", 
-            ignore_unknown_values=True        
-        )
-
-        job = client.load_table_from_dataframe(
-            df_pd, table_id, job_config=job_config
-        )
-
-        job.result()  
-        return job.output_rows
-
-    except Exception as e:
-        raise Exception(f"Fallo insertando los datos en BigQuery: {str(e)}")
-    
 def extraer_anomalias_pendientes() -> pl.DataFrame:
     """
     Trae los datos crudos de SAP solo de los SKUs marcados como
@@ -150,7 +137,6 @@ def extraer_anomalias_pendientes() -> pl.DataFrame:
             )
         """
         query_job = client.query(query)
-        df_resultado = pl.from_arrow(query_job.result().to_arrow())
-        return df_resultado
+        return _arrow_query_job_a_polars(query_job)
     except Exception as e:
         raise Exception(f"Fallo al extraer las anomalías: {str(e)}")

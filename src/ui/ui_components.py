@@ -13,6 +13,7 @@ import streamlit.components.v1 as st_components
 import pandas as pd
 from typing import Dict, Any, List, Set, Optional, Tuple
 import polars as pl
+import time
 
 from ui.theme import (
     ACCENT_PRIMARY, ACCENT_HOVER,
@@ -52,11 +53,6 @@ _LABELS = {
         'score_prom_lbl':  'Score Promedio',
         'sin_datos_anom':  'Sin datos — las anomalías aparecerán aquí',
         'sin_datos_mat':   'Sin datos — el desglose por material aparecerá aquí',
-        'explorer_tip':    'Cómo leer esta tabla',
-        'explorer_tip_body': (
-            'Solo aparecen registros que incumplen al menos una regla y únicamente las columnas de reglas donde existe '
-            'algún fallo. Identificadores del maestro a la izquierda; marcas coloreadas: ✓ bien, ✗ revisar, — no aplica.'
-        ),
         'explorer_sin_fallos': 'Sin incumplimientos detectados para las reglas de completitud en esta selección.',
         'explorer_marks_hint': '✓ conforme · ✗ incumple la regla · — no aplica.',
         'explorer_mark_na': '—',
@@ -91,11 +87,6 @@ _LABELS = {
         'score_prom_lbl':  'Avg Score',
         'sin_datos_anom':  'No data — anomalies will appear here',
         'sin_datos_mat':   'No data — material breakdown will appear here',
-        'explorer_tip':    'How to read this table',
-        'explorer_tip_body': (
-            'Only rows with at least one rule failure appear, and only rule columns where any failure exists. '
-            'Master identifiers first; colored marks: ✓ ok, ✗ needs review, — N/A.'
-        ),
         'explorer_sin_fallos': 'No completeness rule violations in this selection.',
         'explorer_marks_hint': '✓ pass · ✗ fails rule · — N/A.',
         'explorer_mark_na': '—',
@@ -628,6 +619,7 @@ def renderizar_grafico_por_foco(df_procesado: pd.DataFrame) -> None:
 #  EXPLORADOR DE ANOMALÍAS
 # ─────────────────────────────────────────────
 def renderizar_tabla_hallazgos(df_resultados) -> None:
+
     if df_resultados is None or len(df_resultados) == 0:
         st.info(_lbl('sin_hallazgos'))
         return
@@ -654,14 +646,6 @@ def renderizar_tabla_hallazgos(df_resultados) -> None:
     if not cols_con_fallo:
         st.success(_lbl("explorer_sin_fallos"))
         return
-
-    st.markdown(
-        f"<div class='talon-explorer-tip'>"
-        f"<p class='talon-explorer-tip-title'>{_lbl('explorer_tip')}</p>"
-        f"<p class='talon-explorer-tip-text'>{_lbl('explorer_tip_body')}</p></div>"
-        f"<div style='margin-top:16px;'></div>",
-        unsafe_allow_html=True,
-    )
 
     columnas_ocultar = [
         "Hallazgos_Detallados",
@@ -727,12 +711,15 @@ def _renderizar_tabla_con_copia_sku(
     col_config: Dict[str, Any],
 ) -> None:
     """
-    Tabla HTML completa vía st_components.html().
-    — Ancho: el iframe se expande al 100% del contenedor padre mediante
-      un hack de ResizeObserver que reporta el ancho real y ajusta el iframe.
-    — Altura: calculada con JS tras render y comunicada a Streamlit.
-    — SKU: ícono de copia inline que aparece al hacer hover.
+    Tabla HTML renderizada directamente con st.markdown (sin iframe).
+    Al no usar st_components.html() se elimina el límite de 150 px que
+    Streamlit inyecta en el iframe y que impedía ver todas las filas.
+    El botón de copia de SKU usa un ID único por tabla para que el
+    script inline no colisione si hay varias tablas en la misma página.
     """
+    import uuid as _uuid
+    tabla_id = "tln_" + _uuid.uuid4().hex[:8]
+
     mark_pass = _lbl("explorer_mark_pass")
     mark_fail = _lbl("explorer_mark_fail")
     mark_na   = _lbl("explorer_mark_na")
@@ -761,10 +748,10 @@ def _renderizar_tabla_con_copia_sku(
             if c == "SKU":
                 sku_safe = html.escape(val_str, quote=True)
                 tds += (
-                    f'<td class="sku-cell">'
-                    f'<div class="sku-wrap">'
-                    f'<span class="sku-text">{escaped}</span>'
-                    f'<button class="sku-copy" data-val="{sku_safe}" title="Copiar SKU">'
+                    f'<td class="tln-sku-cell">'
+                    f'<div class="tln-sku-wrap">'
+                    f'<span class="tln-sku-text">{escaped}</span>'
+                    f'<button class="tln-sku-copy" data-val="{sku_safe}" title="Copiar SKU">'
                     f'<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">'
                     f'<path d="M4 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6'
                     f'a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0'
@@ -776,77 +763,70 @@ def _renderizar_tabla_con_copia_sku(
                 )
             elif c in marca_set:
                 if val_str == mark_pass:
-                    tds += f'<td class="mc"><span class="mk pass">{escaped}</span></td>'
+                    tds += f'<td class="tln-mc"><span class="tln-mk tln-pass">{escaped}</span></td>'
                 elif val_str == mark_fail:
-                    tds += f'<td class="mc"><span class="mk fail">{escaped}</span></td>'
+                    tds += f'<td class="tln-mc"><span class="tln-mk tln-fail">{escaped}</span></td>'
                 elif val_str == mark_na:
-                    tds += f'<td class="mc"><span class="mk na">{escaped}</span></td>'
+                    tds += f'<td class="tln-mc"><span class="tln-mk tln-na">{escaped}</span></td>'
                 else:
-                    tds += f'<td class="mc">{escaped}</td>'
+                    tds += f'<td class="tln-mc">{escaped}</td>'
             else:
                 tds += f'<td>{escaped}</td>'
         rows_html += f"<tr>{tds}</tr>"
 
-    # Altura estimada inicial (JS la corrige en tiempo real)
-    altura_est = 85 + (len(df_main) * 40)
-
-    html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
+    # ── HTML completo — sin iframe, renderizado en el DOM de Streamlit ──
+    html_content = f"""
 <style>
-  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  html, body {{
-    background: #0D1117;
-    font-family: 'IBM Plex Sans', sans-serif;
-    font-size: 12px;
-    color: #CBD5E1;
-    margin: 0;
-    padding: 0;
-  }}
-  .wrap {{
+  /* Scope con prefijo tln- para no colisionar con los estilos de Streamlit */
+  .tln-wrap {{
     width: 100%;
     overflow-x: auto;
     border: 1px solid #1F2937;
     border-radius: 8px;
-    padding-bottom: 15px; /* Crea espacio para que el scrollbar no pise la última fila */
+    padding-bottom: 8px;
     margin-bottom: 5px;
+    box-sizing: border-box;
   }}
-  table {{
-  }}thead tr {{
+  .tln-wrap table {{
+    width: 100%;
+    border-collapse: collapse;
+  }}
+  .tln-wrap thead tr {{
     background: #111827;
     border-bottom: 1px solid #1F2937;
   }}
-  th {{
+  .tln-wrap th {{
     font-family: 'IBM Plex Mono', monospace;
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.8px;
     text-transform: uppercase;
     color: #64748B;
-    padding: 9px 12px;
+    padding: 12px 16px;
     text-align: left;
     white-space: nowrap;
   }}
-  tbody tr {{
+  .tln-wrap tbody tr {{
     border-bottom: 1px solid #161D28;
     transition: background 0.1s;
   }}
-  tbody tr:nth-child(even) {{ background: rgba(148,163,184,0.03); }}
-  tbody tr:hover {{ background: rgba(59,130,246,0.07); }}
-  td {{
-    padding: 7px 12px;
+  .tln-wrap tbody tr:nth-child(even) {{ background: rgba(148,163,184,0.03); }}
+  .tln-wrap tbody tr:hover {{ background: rgba(59,130,246,0.07); }}
+  .tln-wrap td {{
+    padding: 14px 16px;
     vertical-align: middle;
     white-space: nowrap;
+    font-size: 13px;
+    color: #CBD5E1;
   }}
-  .sku-cell {{ min-width: 150px; }}
-  .sku-wrap {{ display: flex; align-items: center; gap: 6px; }}
-  .sku-text {{
+  .tln-sku-cell {{ min-width: 150px; }}
+  .tln-sku-wrap {{ display: flex; align-items: center; gap: 6px; }}
+  .tln-sku-text {{
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 11px;
+    font-size: 15px;
     color: #E2E8F0;
   }}
-  .sku-copy {{
+  .tln-sku-copy {{
     opacity: 0;
     background: none;
     border: 1px solid transparent;
@@ -858,14 +838,14 @@ def _renderizar_tabla_con_copia_sku(
     transition: opacity 0.15s, background 0.15s, border-color 0.15s, color 0.15s;
     flex-shrink: 0;
   }}
-  .sku-cell:hover .sku-copy {{ opacity: 1; }}
-  .sku-copy:hover {{
+  .tln-sku-cell:hover .tln-sku-copy {{ opacity: 1; }}
+  .tln-sku-copy:hover {{
     background: rgba(59,130,246,0.15);
     border-color: #3B82F6;
   }}
-  .sku-copy.ok {{ opacity: 1 !important; color: #86efac; border-color: #22c55e; }}
-  .mc {{ text-align: center; }}
-  .mk {{
+  .tln-sku-copy.tln-ok {{ opacity: 1 !important; color: #86efac; border-color: #22c55e; }}
+  .tln-mc {{ text-align: center; }}
+  .tln-mk {{
     display: inline-block;
     min-width: 26px;
     padding: 2px 7px;
@@ -874,47 +854,36 @@ def _renderizar_tabla_con_copia_sku(
     font-size: 13px;
     text-align: center;
   }}
-  .mk.pass {{ color: #86efac; background: rgba(34,197,94,0.18); }}
-  .mk.fail {{ color: #fca5a5; background: rgba(239,68,68,0.22); }}
-  .mk.na   {{ color: #94a3b8; background: rgba(148,163,184,0.12); }}
+  .tln-pass {{ color: #86efac; background: rgba(34,197,94,0.18); }}
+  .tln-fail {{ color: #fca5a5; background: rgba(239,68,68,0.22); }}
+  .tln-na   {{ color: #94a3b8; background: rgba(148,163,184,0.12); }}
 </style>
-</head>
-<body>
-<div class="wrap" id="wrap">
+<div class="tln-wrap" id="{tabla_id}">
   <table><thead><tr>{ths}</tr></thead><tbody>{rows_html}</tbody></table>
 </div>
 <script>
-// ── Copia al portapapeles ──────────────────────────────────────────
-document.querySelectorAll('.sku-copy').forEach(function(btn) {{
-  btn.addEventListener('click', function(e) {{
-    e.stopPropagation();
-    navigator.clipboard.writeText(btn.getAttribute('data-val')).then(function() {{
-      var orig = btn.innerHTML;
-      btn.classList.add('ok');
-      btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg>';
-      setTimeout(function() {{
-        btn.classList.remove('ok');
-        btn.innerHTML = orig;
-      }}, 1600);
+(function() {{
+  var tabla = document.getElementById('{tabla_id}');
+  if (!tabla) return;
+  tabla.querySelectorAll('.tln-sku-copy').forEach(function(btn) {{
+    btn.addEventListener('click', function(e) {{
+      e.stopPropagation();
+      var val = btn.getAttribute('data-val');
+      navigator.clipboard.writeText(val).then(function() {{
+        var orig = btn.innerHTML;
+        btn.classList.add('tln-ok');
+        btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/></svg>';
+        setTimeout(function() {{
+          btn.classList.remove('tln-ok');
+          btn.innerHTML = orig;
+        }}, 1600);
+      }});
     }});
   }});
-}});
+}})();
+</script>"""
 
-// ── Auto-altura: reporta al iframe de Streamlit la altura real ─────
-function reportHeight() {{
-   var h = document.getElementById('wrap').getBoundingClientRect().height + 20;  
-   window.parent.postMessage({{isStreamlitMessage: true, type: 'setFrameHeight', height: h}}, '*');
-   }}
-// Espera a que el DOM esté pintado antes de medir
-requestAnimationFrame(function() {{
-  requestAnimationFrame(reportHeight);
-}});
-window.addEventListener('resize', reportHeight);
-</script>
-</body>
-</html>"""
-
-    st_components.html(html_content, height=altura_est, scrolling=False)
+    st.markdown(html_content, unsafe_allow_html=True)
 
 
 def renderizar_botones_copia_sku(skus: List[str]) -> None:
